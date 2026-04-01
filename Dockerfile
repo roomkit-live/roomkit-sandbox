@@ -11,13 +11,14 @@ RUN apk add --no-cache \
 
 # Install RTK — static Rust binary, no dependencies
 # Checksum verified to prevent supply chain attacks
-ARG RTK_VERSION=0.34.0
-ARG TARGETARCH=amd64
-ARG RTK_SHA256=f1214690ad4bafab8358883385c2597d11174845516a5fd4bbea694ce61266f2
-RUN curl -fsSL "https://github.com/rtk-ai/rtk/releases/download/v${RTK_VERSION}/rtk-linux-${TARGETARCH}" \
-    -o /usr/local/bin/rtk \
-    && echo "${RTK_SHA256}  /usr/local/bin/rtk" | sha256sum -c - \
+ARG RTK_VERSION=0.34.2
+ARG RTK_SHA256=419b38216c8b1249cc72386d4bbcfe9e7808bde0af63159c826438da534f9e59
+RUN curl -fsSL "https://github.com/rtk-ai/rtk/releases/download/v${RTK_VERSION}/rtk-x86_64-unknown-linux-musl.tar.gz" \
+    -o /tmp/rtk.tar.gz \
+    && echo "${RTK_SHA256}  /tmp/rtk.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/rtk.tar.gz -C /usr/local/bin/ rtk \
     && chmod +x /usr/local/bin/rtk \
+    && rm /tmp/rtk.tar.gz \
     && rtk --version
 
 # Non-root user for security
