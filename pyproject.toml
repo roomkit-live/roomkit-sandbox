@@ -22,7 +22,7 @@ classifiers = [
     "Typing :: Typed",
 ]
 dependencies = [
-    "roomkit>=0.7.0a8",
+    "roomkit>=0.7.0a9",
 ]
 
 [tool.uv.sources]
