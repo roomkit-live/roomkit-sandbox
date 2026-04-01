@@ -13,7 +13,7 @@ Supports two modes:
 
 2. **With external backend** — pass any object implementing
    ``create_container``, ``exec_command``, ``container_exists``,
-   and ``find_container`` (e.g. Luge's ``ContainerBackend``)::
+   and ``find_container``::
 
        sandbox = ContainerSandboxExecutor(backend=my_backend)
 """

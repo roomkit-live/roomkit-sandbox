@@ -50,7 +50,7 @@ agent = Agent(
 
 ## With an Existing Backend
 
-If you already have a container backend (e.g. Luge's `ContainerBackend`), pass it directly:
+If you already have a container backend, pass it directly:
 
 ```python
 sandbox = ContainerSandboxExecutor(

@@ -1,7 +1,7 @@
 """Minimal Docker backend for standalone roomkit-sandbox use.
 
-Integrators that already have a container backend (e.g. Luge's
-``ContainerBackend``) can pass it directly to
+Integrators that already have a container backend can pass it
+directly to
 :class:`~roomkit_sandbox.ContainerSandboxExecutor`.  This module
 provides a lightweight alternative for standalone use that only
 depends on the ``docker`` Python SDK.
