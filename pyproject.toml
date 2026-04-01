@@ -44,12 +44,19 @@ select = ["E", "F", "W", "I", "B", "UP"]
 [tool.ruff.format]
 quote-style = "double"
 
+[tool.ty.rules]
+# docker is an optional dependency — conditional import is guarded by try/except
+unresolved-import = "warn"
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 
 [dependency-groups]
 dev = [
+    "bandit>=1.9.4",
     "pytest>=9.0.2",
     "pytest-asyncio>=1.3.0",
+    "ruff>=0.15.8",
+    "ty>=0.0.27",
 ]

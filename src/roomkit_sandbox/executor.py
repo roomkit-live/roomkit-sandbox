@@ -13,14 +13,18 @@ Supports two modes:
 
 2. **With external backend** — pass any object implementing
    ``create_container``, ``exec_command``, ``container_exists``,
-   and ``find_container``::
+   and ``find_container``.  ``exec_command`` must return an object
+   with ``exit_code``, ``stdout``, and ``stderr`` attributes (see
+   :class:`~roomkit_sandbox.backend.ExecResult`)::
 
        sandbox = ContainerSandboxExecutor(backend=my_backend)
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import shlex
 from typing import Any, Protocol, runtime_checkable
 
 from roomkit.sandbox import SandboxExecutor, SandboxResult
@@ -33,14 +37,26 @@ logger = logging.getLogger("roomkit_sandbox")
 
 @runtime_checkable
 class ContainerBackendProtocol(Protocol):
-    """Minimal interface for container backends."""
+    """Minimal interface for container backends.
+
+    ``exec_command`` must return an object with ``exit_code: int``,
+    ``stdout: str``, and ``stderr: str`` attributes.
+    """
 
     async def create_container(
-        self, session_id: str, labels: dict[str, str] | None = ..., env: dict[str, str] | None = ...
+        self,
+        session_id: str,
+        labels: dict[str, str] | None = ...,
+        env: dict[str, str] | None = ...,
     ) -> str: ...
 
     async def exec_command(
-        self, container_id: str, cmd: list[str], workdir: str = ..., env: dict[str, str] | None = ..., timeout: int = ...
+        self,
+        container_id: str,
+        cmd: list[str],
+        workdir: str = ...,
+        env: dict[str, str] | None = ...,
+        timeout: int = ...,
     ) -> Any: ...
 
     async def container_exists(self, container_id: str) -> bool: ...
@@ -61,7 +77,7 @@ class ContainerSandboxExecutor(SandboxExecutor):
             Containers are discovered by label on startup.
         workdir: Working directory inside the container.
         timeout: Default command timeout in seconds.
-        setup_commands: Commands to run on first container creation
+        setup_commands: Shell commands to run on first container creation
             (e.g. ``["git clone ... /workspace/repo"]``).
         labels: Extra labels for container creation.
         env: Extra environment variables for container creation.
@@ -85,7 +101,7 @@ class ContainerSandboxExecutor(SandboxExecutor):
         self._env = env or {}
         self._session_id = session_id or "roomkit-sandbox"
         self._container_id: str | None = None
-        self._initialized = False
+        self._lock = asyncio.Lock()
 
         if backend is not None:
             self._backend = backend
@@ -96,45 +112,46 @@ class ContainerSandboxExecutor(SandboxExecutor):
 
     async def _ensure_container(self) -> str:
         """Get or create a sandbox container, returning its ID."""
-        # Fast path: cached container still running
-        if self._container_id is not None:
-            if await self._backend.container_exists(self._container_id):
-                return self._container_id
-            self._container_id = None
+        async with self._lock:
+            # Fast path: cached container still running
+            if self._container_id is not None:
+                if await self._backend.container_exists(self._container_id):
+                    return self._container_id
+                self._container_id = None
 
-        # Discovery: find existing container by session label
-        found = await self._backend.find_container(self._session_id)
-        if found is not None:
-            self._container_id = found
-            logger.info("Reusing sandbox container %s", found[:12])
-            return found
+            # Discovery: find existing container by session label
+            found = await self._backend.find_container(self._session_id)
+            if found is not None:
+                self._container_id = found
+                logger.info("Reusing sandbox container %s", found[:12])
+                return found
 
-        # Create new container
-        container_id = await self._backend.create_container(
-            session_id=self._session_id,
-            labels=self._labels,
-            env=self._env,
-        )
-        self._container_id = container_id
-
-        # Run setup commands (e.g. git clone)
-        for cmd_str in self._setup_commands:
-            logger.info("Running setup: %s", cmd_str[:80])
-            result = await self._backend.exec_command(
-                container_id,
-                ["bash", "-c", cmd_str],
-                workdir=self._workdir,
-                timeout=self._timeout,
+            # Create new container
+            container_id = await self._backend.create_container(
+                session_id=self._session_id,
+                labels=self._labels,
+                env=self._env,
             )
-            if result.exit_code != 0:
-                logger.warning(
-                    "Setup command failed (exit %d): %s",
-                    result.exit_code,
-                    result.stderr[:200] if hasattr(result, "stderr") else "",
-                )
+            self._container_id = container_id
 
-        self._initialized = True
-        return container_id
+            # Run setup commands (e.g. git clone)
+            for cmd_str in self._setup_commands:
+                logger.info("Running setup: %s", cmd_str[:80])
+                cmd = shlex.split(cmd_str)
+                result = await self._backend.exec_command(
+                    container_id,
+                    cmd,
+                    workdir=self._workdir,
+                    timeout=self._timeout,
+                )
+                if result.exit_code != 0:
+                    logger.warning(
+                        "Setup command failed (exit %d): %s",
+                        result.exit_code,
+                        result.stderr[:200],
+                    )
+
+            return container_id
 
     async def execute(
         self,
@@ -143,24 +160,30 @@ class ContainerSandboxExecutor(SandboxExecutor):
     ) -> SandboxResult:
         """Run a sandbox command via RTK in the container."""
         container_id = await self._ensure_container()
-        cmd = build_rtk_command(command, arguments or {})
+        args = arguments or {}
+        cmd = build_rtk_command(command, args)
+
+        # Per-call timeout override (e.g. sandbox_bash timeout parameter)
+        timeout = args.get("timeout", self._timeout)
+        if not isinstance(timeout, int) or timeout <= 0:
+            timeout = self._timeout
 
         try:
             result = await self._backend.exec_command(
                 container_id,
                 cmd,
                 workdir=self._workdir,
-                timeout=self._timeout,
+                timeout=timeout,
             )
             return SandboxResult(
                 exit_code=result.exit_code,
-                output=result.stdout if hasattr(result, "stdout") else str(result),
-                error=result.stderr if hasattr(result, "stderr") else "",
+                output=result.stdout,
+                error=result.stderr,
             )
         except TimeoutError:
             return SandboxResult(
                 exit_code=124,
-                error=f"Command timed out after {self._timeout}s",
+                error=f"Command timed out after {timeout}s",
             )
         except Exception as exc:
             logger.exception("Sandbox command failed: %s", command)

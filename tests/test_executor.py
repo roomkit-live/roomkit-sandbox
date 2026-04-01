@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import pytest
-
 from roomkit.sandbox.tools import SANDBOX_TOOL_PREFIX, SANDBOX_TOOL_SCHEMAS
+
 from roomkit_sandbox import ContainerSandboxExecutor
 
 
@@ -115,7 +115,17 @@ async def test_setup_commands(backend):
     # Setup command + actual command = 2 executions
     assert len(backend.executed) == 2
     _, setup_cmd = backend.executed[0]
-    assert setup_cmd[0] == "bash"
+    assert setup_cmd == ["git", "clone", "https://example.com/repo.git", "/workspace/repo"]
+
+
+@pytest.mark.asyncio
+async def test_per_call_timeout(backend):
+    executor = ContainerSandboxExecutor(backend=backend, session_id="timeout-test")
+    await executor.execute("bash", {"command": "make test", "timeout": 120})
+    # The backend should receive the per-call timeout
+    # (We can't directly assert timeout passed to exec_command with this mock,
+    # but we verify it doesn't crash)
+    assert len(backend.executed) == 1
 
 
 @pytest.mark.asyncio

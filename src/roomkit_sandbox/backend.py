@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from dataclasses import dataclass
 from typing import Any
 
@@ -23,7 +24,12 @@ DEFAULT_CPU_COUNT = 1
 
 @dataclass
 class ExecResult:
-    """Result of executing a command in a container."""
+    """Result of executing a command in a container.
+
+    Any external container backend passed to
+    :class:`~roomkit_sandbox.ContainerSandboxExecutor` must return
+    objects with these three attributes from ``exec_command``.
+    """
 
     exit_code: int
     stdout: str
@@ -58,17 +64,19 @@ class DockerSandboxBackend:
         self._network = network
         self._extra_env = extra_env or {}
         self._client: Any = None
+        self._client_lock = threading.Lock()
 
     def _get_client(self) -> Any:
-        if self._client is None:
-            try:
-                import docker
-            except ImportError as exc:
-                raise ImportError(
-                    "docker package required: pip install roomkit-sandbox[docker]"
-                ) from exc
-            self._client = docker.from_env()
-        return self._client
+        with self._client_lock:
+            if self._client is None:
+                try:
+                    import docker
+                except ImportError as exc:
+                    raise ImportError(
+                        "docker package required: pip install roomkit-sandbox[docker]"
+                    ) from exc
+                self._client = docker.from_env()
+            return self._client
 
     async def create_container(
         self,
@@ -115,7 +123,7 @@ class DockerSandboxBackend:
     ) -> ExecResult:
         """Execute a command in a running container."""
         client = self._get_client()
-        container = client.containers.get(container_id)
+        container = await asyncio.to_thread(client.containers.get, container_id)
 
         def _run() -> ExecResult:
             result = container.exec_run(
