@@ -31,7 +31,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import re
 import shlex
 
@@ -111,12 +110,18 @@ class SmolBSDSandboxBackend:
         # Boot the VM in daemonized mode
         cmd = [
             self._startnb,
-            "-k", self._kernel,
-            "-i", self._image,
-            "-m", str(self._memory),
-            "-c", str(self._cpus),
-            "-p", f"::{ ssh_port}-:22",
-            "-d", "-s",
+            "-k",
+            self._kernel,
+            "-i",
+            self._image,
+            "-m",
+            str(self._memory),
+            "-c",
+            str(self._cpus),
+            "-p",
+            f"::{ssh_port}-:22",
+            "-d",
+            "-s",
         ]
 
         proc = await asyncio.create_subprocess_exec(
@@ -172,10 +177,14 @@ class SmolBSDSandboxBackend:
         """Execute a command via SSH in the VM."""
         ssh_cmd = [
             "ssh",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "LogLevel=ERROR",
-            "-p", str(port),
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "LogLevel=ERROR",
+            "-p",
+            str(port),
             "ssh@127.0.0.1",
             command,
         ]
@@ -258,7 +267,9 @@ class SmolBSDSandboxBackend:
         # Kill QEMU by finding the process using the SSH port
         try:
             proc = await asyncio.create_subprocess_exec(
-                "fuser", "-k", f"{vm_info['port']}/tcp",
+                "fuser",
+                "-k",
+                f"{vm_info['port']}/tcp",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )

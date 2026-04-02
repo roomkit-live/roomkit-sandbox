@@ -4,75 +4,108 @@ Container-based sandbox executor for [RoomKit](https://github.com/roomkit-live/r
 
 ## What it does
 
-`roomkit-sandbox` provides a ready-made `SandboxExecutor` implementation that runs commands inside lightweight Docker containers using RTK for token-optimized output (60-90% fewer tokens).
-
-Any AI agent (Anthropic, OpenAI, Ollama, vLLM) connected to RoomKit gets access to:
+`roomkit-sandbox` provides a ready-made `SandboxExecutor` implementation that runs commands inside lightweight containers or VMs. Any AI agent (Anthropic, OpenAI, Ollama, vLLM) connected to RoomKit gets access to:
 
 | Tool | Description |
 |------|-------------|
 | `sandbox_read` | Read file contents with line ranges |
+| `sandbox_write` | Write content to a file |
+| `sandbox_edit` | Replace a string in a file |
 | `sandbox_ls` | List directory contents |
 | `sandbox_grep` | Search file contents (regex) |
 | `sandbox_find` | Find files by pattern |
 | `sandbox_git` | Run any git command |
-| `sandbox_write` | Write content to a file |
-| `sandbox_edit` | Replace a string in a file |
-| `sandbox_delete` | Delete a file or directory |
 | `sandbox_diff` | Compare two files |
+| `sandbox_delete` | Delete a file or directory |
 | `sandbox_bash` | Execute shell commands |
 
 ## Installation
 
 ```bash
-pip install roomkit-sandbox
-# With Docker backend:
+# Docker backend (development)
 pip install roomkit-sandbox[docker]
+
+# Kubernetes backend (production)
+pip install roomkit-sandbox[kubernetes]
+
+# SmolBSD backend (local VM isolation)
+pip install roomkit-sandbox
 ```
+
+## Backends
+
+Three backends for different deployment profiles:
+
+| | Docker | Kubernetes | SmolBSD |
+|--|--------|------------|---------|
+| **Isolation** | Container | Pod | VM |
+| **Boot** | ~500ms | ~2-5s | ~5s (SSH) |
+| **Image** | 37MB (Alpine + RTK) | 37MB | 512MB (NetBSD) |
+| **Commands** | RTK (token-optimized) | RTK | Native (POSIX) |
+| **Use case** | Dev, CI | Production | Local assistant |
+
+See [docs/backends.md](docs/backends.md) for detailed setup instructions.
 
 ## Quick Start
 
+### Docker
+
 ```python
 from roomkit import Agent
-from roomkit.providers.anthropic import AnthropicAIProvider, AnthropicConfig
 from roomkit_sandbox import ContainerSandboxExecutor
+from roomkit_sandbox.docker_backend import DockerSandboxBackend
 
-# Create a sandbox executor
 sandbox = ContainerSandboxExecutor(
-    image="ghcr.io/roomkit-live/sandbox:latest",
-    session_id="my-agent-sandbox",
+    backend=DockerSandboxBackend(image="ghcr.io/roomkit-live/sandbox:latest"),
+    session_id="my-sandbox",
 )
 
-# Attach to any RoomKit agent
-agent = Agent(
-    "code-reviewer",
-    provider=AnthropicAIProvider(AnthropicConfig(api_key="sk-...")),
-    system_prompt="You are a code reviewer with access to a sandbox.",
-    sandbox=sandbox,
-)
+agent = Agent("reviewer", provider=..., sandbox=sandbox)
 ```
 
-## With an Existing Backend
-
-If you already have a container backend, pass it directly:
+### Kubernetes
 
 ```python
+from roomkit_sandbox import ContainerSandboxExecutor
+from roomkit_sandbox.k8s_backend import KubernetesSandboxBackend
+
 sandbox = ContainerSandboxExecutor(
-    backend=my_container_backend,  # Docker or Kubernetes
-    session_id=f"sandbox:{user_id}",
-    setup_commands=["git clone https://github.com/org/repo.git /workspace/repo"],
-    workdir="/workspace/repo",
+    backend=KubernetesSandboxBackend(
+        image="ghcr.io/roomkit-live/sandbox:latest",
+        namespace="production",
+    ),
 )
 ```
+
+### SmolBSD (Experimental)
+
+```python
+from roomkit_sandbox import ContainerSandboxExecutor, NativeCommandBuilder
+from roomkit_sandbox.smolbsd_backend import SmolBSDSandboxBackend
+
+sandbox = ContainerSandboxExecutor(
+    backend=SmolBSDSandboxBackend(smolbsd_dir="/path/to/smolBSD", service="sshd"),
+    command_builder=NativeCommandBuilder(),
+)
+```
+
+## Command Builders
+
+The `CommandBuilder` ABC controls how tool calls become shell commands:
+
+- **`RtkCommandBuilder`** (default) — uses RTK for 60-90% token reduction
+- **`NativeCommandBuilder`** — uses standard Unix commands (cat, grep, find, git)
+- **Custom** — subclass `CommandBuilder` for your own tools
+
+See [docs/commands.md](docs/commands.md) for details and examples.
 
 ## Container Image
 
-Build the lightweight sandbox image (~30-50MB):
-
 ```bash
-docker build -t roomkit-sandbox:latest .
+docker pull ghcr.io/roomkit-live/sandbox:latest
 ```
 
-Contents: Alpine 3.21 + bash + git + curl + jq + RTK binary. No Node.js, no Python, no heavy runtimes.
+Alpine 3.21 + RTK 0.34.2 + git + bash + curl + jq — **37MB**.
 
 ## Architecture
 
@@ -83,15 +116,21 @@ Agent (any provider) ──tool call──> RoomKit AIChannel
                                         │
                               ContainerSandboxExecutor
                                         │
-                                   Docker / K8s
-                                        │
-                              Lightweight container
-                                   (Alpine + RTK)
-                                        │
-                              rtk read / grep / git / bash
-                                        │
-                              Token-optimized output → Agent
+                    ┌───────────────────┼───────────────────┐
+                    │                   │                   │
+              DockerBackend      K8sBackend        SmolBSDBackend
+                    │                   │                   │
+              Container (37MB)     Pod (37MB)         VM (512MB)
+                    │                   │                   │
+              RtkCommandBuilder  RtkCommandBuilder  NativeCommandBuilder
+                    │                   │                   │
+              Token-optimized    Token-optimized    Standard output
 ```
+
+## Documentation
+
+- [Backends](docs/backends.md) — Docker, Kubernetes, SmolBSD setup and comparison
+- [Command Builders](docs/commands.md) — RTK vs Native, creating custom builders
 
 ## License
 

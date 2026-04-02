@@ -31,7 +31,7 @@ from roomkit.sandbox import SandboxExecutor, SandboxResult
 from roomkit.sandbox.tools import SANDBOX_TOOL_SCHEMAS
 
 from roomkit_sandbox._shared import DEFAULT_IMAGE, ExecResult
-from roomkit_sandbox.commands import CommandBuilder, RtkCommandBuilder, build_rtk_command
+from roomkit_sandbox.commands import CommandBuilder, RtkCommandBuilder
 
 logger = logging.getLogger("roomkit_sandbox")
 
