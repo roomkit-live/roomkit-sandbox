@@ -31,7 +31,7 @@ from roomkit.sandbox import SandboxExecutor, SandboxResult
 from roomkit.sandbox.tools import SANDBOX_TOOL_SCHEMAS
 
 from roomkit_sandbox._shared import DEFAULT_IMAGE, ExecResult
-from roomkit_sandbox.commands import build_rtk_command
+from roomkit_sandbox.commands import CommandBuilder, RtkCommandBuilder, build_rtk_command
 
 logger = logging.getLogger("roomkit_sandbox")
 
@@ -96,6 +96,7 @@ class ContainerSandboxExecutor(SandboxExecutor):
         setup_commands: list[str] | None = None,
         labels: dict[str, str] | None = None,
         env: dict[str, str] | None = None,
+        command_builder: CommandBuilder | None = None,
     ) -> None:
         self._workdir = workdir
         self._timeout = timeout
@@ -105,6 +106,7 @@ class ContainerSandboxExecutor(SandboxExecutor):
         self._session_id = session_id or "roomkit-sandbox"
         self._container_id: str | None = None
         self._lock = asyncio.Lock()
+        self._command_builder = command_builder or RtkCommandBuilder()
 
         if backend is not None:
             self._backend = backend
@@ -161,10 +163,10 @@ class ContainerSandboxExecutor(SandboxExecutor):
         command: str,
         arguments: dict[str, Any] | None = None,
     ) -> SandboxResult:
-        """Run a sandbox command via RTK in the container."""
+        """Run a sandbox command in the container."""
         container_id = await self._ensure_container()
         args = arguments or {}
-        cmd = build_rtk_command(command, args)
+        cmd = self._command_builder.build(command, args)
 
         # Per-call timeout override (e.g. sandbox_bash timeout parameter)
         timeout = args.get("timeout", self._timeout)

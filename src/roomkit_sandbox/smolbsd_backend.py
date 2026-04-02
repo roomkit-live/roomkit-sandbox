@@ -1,34 +1,39 @@
 """SmolBSD backend for roomkit-sandbox.
 
 Uses smolBSD (https://github.com/NetBSDfr/smolBSD) to run sandbox
-commands inside lightweight NetBSD-based microVMs. Provides true VM
-isolation with ~10ms boot times via Firecracker/QEMU and btrfs
-copy-on-write snapshots.
+commands inside lightweight NetBSD-based microVMs via QEMU/KVM.
+Provides true VM isolation with ~70ms boot times.
 
 Ideal for local AI assistants where container-level isolation isn't
-sufficient (untrusted code execution, multi-tenant local setups).
+sufficient (untrusted code execution on local machines).
 
 Requires:
-- smolBSD installed and configured (``sandbox-setup`` completed)
-- Incus running (Linux) or OrbStack VM (macOS)
-- A golden image with git, bash, and core tools
+- smolBSD cloned and built (``bmake fetchimg && bmake SERVICE=rescue build``)
+- QEMU with KVM support
 
 Usage::
 
     from roomkit_sandbox import ContainerSandboxExecutor
     from roomkit_sandbox.smolbsd_backend import SmolBSDSandboxBackend
 
-    backend = SmolBSDSandboxBackend(stack="base")
-    sandbox = ContainerSandboxExecutor(backend=backend)
+    from roomkit_sandbox.commands import NativeCommandBuilder
+
+    backend = SmolBSDSandboxBackend(
+        smolbsd_dir="/home/user/dev/smolBSD",
+    )
+    sandbox = ContainerSandboxExecutor(
+        backend=backend,
+        command_builder=NativeCommandBuilder(),
+    )
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import shlex
-import shutil
 
 from roomkit_sandbox._shared import ExecResult
 
@@ -43,37 +48,49 @@ def _safe_vm_name(session_id: str) -> str:
 
 
 class SmolBSDSandboxBackend:
-    """SmolBSD backend for running sandbox microVMs.
+    """SmolBSD backend using QEMU microVMs.
 
-    Wraps the smolBSD CLI tools (``sandbox-start``, ``sandbox``,
-    ``sandbox-stop``) to manage Incus-based microVMs.
+    Each sandbox session boots a NetBSD microVM via ``startnb.sh``,
+    communicates through SSH (port forwarding), and cleans up on close.
 
     Args:
-        stack: SmolBSD stack to use for golden image (e.g. ``"base"``,
-            ``"python"``, ``"rust"``). Default: ``"base"``.
-        workdir: Working directory inside the VM. Default: ``/workspace``.
-        ssh_port_base: Base port for SSH port mapping. Each VM gets
-            ``ssh_port_base + slot``.
-        sandbox_bin: Path to the ``sandbox-start`` binary. Auto-detected
-            from PATH if not specified.
+        smolbsd_dir: Path to the cloned smolBSD directory (contains
+            ``startnb.sh``, ``kernels/``, ``images/``).
+        service: Service image to use (e.g. ``"rescue"``).
+        memory: VM memory in MB.
+        cpus: Number of CPU cores.
+        ssh_base_port: Base SSH port for VMs. Each VM gets a unique
+            port derived from the session ID.
+        workdir: Working directory inside the VM.
     """
 
     def __init__(
         self,
-        stack: str = "base",
-        workdir: str = "/workspace",
-        sandbox_bin: str | None = None,
+        smolbsd_dir: str,
+        service: str = "rescue",
+        memory: int = 256,
+        cpus: int = 1,
+        ssh_base_port: int = 2022,
+        workdir: str = "/home/ssh",
         extra_env: dict[str, str] | None = None,
     ) -> None:
-        self._stack = stack
+        self._smolbsd_dir = smolbsd_dir
+        self._service = service
+        self._memory = memory
+        self._cpus = cpus
+        self._ssh_base_port = ssh_base_port
         self._workdir = workdir
         self._extra_env = extra_env or {}
-        self._vms: dict[str, str] = {}  # session_id -> vm_name
+        self._vms: dict[str, dict] = {}  # session_id -> {name, pid, port}
 
-        # Locate smolBSD binaries
-        self._sandbox_start = sandbox_bin or shutil.which("sandbox-start") or "sandbox-start"
-        self._sandbox_cmd = shutil.which("sandbox") or "sandbox"
-        self._sandbox_stop = shutil.which("sandbox-stop") or "sandbox-stop"
+        # smolBSD paths (relative to smolbsd_dir — startnb.sh requires this)
+        self._startnb = "./startnb.sh"
+        self._kernel = "kernels/netbsd-SMOL"
+        self._image = f"images/{service}-amd64.img"
+
+    def _ssh_port(self, session_id: str) -> int:
+        """Derive a unique SSH port from session ID."""
+        return self._ssh_base_port + (hash(session_id) % 100)
 
     async def create_container(
         self,
@@ -81,85 +98,89 @@ class SmolBSDSandboxBackend:
         labels: dict[str, str] | None = None,
         env: dict[str, str] | None = None,
     ) -> str:
-        """Create a smolBSD microVM and return its name."""
+        """Boot a smolBSD microVM and return its name."""
         vm_name = _safe_vm_name(session_id)
 
-        # Check if VM already exists
-        if await self.container_exists(vm_name):
-            self._vms[session_id] = vm_name
+        # Check if already running
+        if vm_name in self._vms and await self.container_exists(vm_name):
             logger.info("Reusing existing smolBSD VM %s", vm_name)
             return vm_name
 
-        # Create new VM from golden image
-        cmd = [self._sandbox_start, vm_name, "--stack", self._stack]
+        ssh_port = self._ssh_port(session_id)
+
+        # Boot the VM in daemonized mode
+        cmd = [
+            self._startnb,
+            "-k", self._kernel,
+            "-i", self._image,
+            "-m", str(self._memory),
+            "-c", str(self._cpus),
+            "-p", f"::{ ssh_port}-:22",
+            "-d", "-s",
+        ]
 
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            cwd=self._smolbsd_dir,
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
 
         if proc.returncode != 0:
-            err = stderr.decode(errors="replace")
-            raise RuntimeError(f"Failed to create smolBSD VM {vm_name}: {err}")
+            err = stderr.decode(errors="replace") + stdout.decode(errors="replace")
+            raise RuntimeError(f"Failed to boot smolBSD VM {vm_name}: {err}")
 
-        self._vms[session_id] = vm_name
-        logger.info("Created smolBSD VM %s (stack=%s)", vm_name, self._stack)
+        # Wait for VM to be reachable via SSH
+        await self._wait_for_ssh(ssh_port)
+
+        self._vms[vm_name] = {
+            "session_id": session_id,
+            "port": ssh_port,
+        }
+        logger.info("Created smolBSD VM %s (port=%d, service=%s)", vm_name, ssh_port, self._service)
 
         # Set up environment variables if provided
         merged_env = dict(self._extra_env)
         if env:
             merged_env.update(env)
         if merged_env:
-            env_lines = []
             for k, v in merged_env.items():
                 if not _ENV_KEY_RE.match(k):
                     raise ValueError(f"Invalid environment variable name: {k!r}")
-                env_lines.append(shlex.quote(f"export {k}={shlex.quote(v)}"))
-            await self._exec_in_vm(
-                vm_name,
-                f"printf '%s\\n' {' '.join(env_lines)} >> /etc/profile.d/sandbox-env.sh",
-            )
-
-        # Create workspace directory
-        await self._exec_in_vm(vm_name, f"mkdir -p {self._workdir}")
+                await self._ssh_exec(ssh_port, f"export {k}={shlex.quote(v)}")
 
         return vm_name
 
-    async def exec_command(
-        self,
-        container_id: str,
-        cmd: list[str],
-        workdir: str = "/workspace",
-        env: dict[str, str] | None = None,
-        timeout: int = 30,
-    ) -> ExecResult:
-        """Execute a command in a smolBSD VM."""
-        # Build command with workdir and env
-        parts = []
-        if env:
-            for key, value in env.items():
-                if not _ENV_KEY_RE.match(key):
-                    raise ValueError(f"Invalid environment variable name: {key!r}")
-                parts.append(f"export {key}={shlex.quote(value)}")
-        if workdir:
-            parts.append(f"cd {shlex.quote(workdir)}")
-        parts.append(shlex.join(cmd))
-        full_cmd = " && ".join(parts)
+    async def _wait_for_ssh(self, port: int, timeout: int = 15) -> None:
+        """Wait for SSH to become available on the forwarded port."""
+        deadline = asyncio.get_event_loop().time() + timeout
+        while asyncio.get_event_loop().time() < deadline:
+            try:
+                _, writer = await asyncio.wait_for(
+                    asyncio.open_connection("127.0.0.1", port),
+                    timeout=2,
+                )
+                writer.close()
+                await writer.wait_closed()
+                return
+            except (ConnectionRefusedError, TimeoutError, OSError):
+                await asyncio.sleep(0.5)
+        raise TimeoutError(f"SSH not reachable on port {port} after {timeout}s")
 
-        return await asyncio.wait_for(
-            self._exec_in_vm(container_id, full_cmd),
-            timeout=timeout,
-        )
-
-    async def _exec_in_vm(self, vm_name: str, command: str) -> ExecResult:
-        """Execute a command inside a smolBSD VM via the sandbox CLI."""
-        proc = await asyncio.create_subprocess_exec(
-            self._sandbox_cmd,
-            vm_name,
-            "--cmd",
+    async def _ssh_exec(self, port: int, command: str) -> ExecResult:
+        """Execute a command via SSH in the VM."""
+        ssh_cmd = [
+            "ssh",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "LogLevel=ERROR",
+            "-p", str(port),
+            "ssh@127.0.0.1",
             command,
+        ]
+        proc = await asyncio.create_subprocess_exec(
+            *ssh_cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -170,47 +191,78 @@ class SmolBSDSandboxBackend:
             stderr=stderr.decode(errors="replace"),
         )
 
+    async def exec_command(
+        self,
+        container_id: str,
+        cmd: list[str],
+        workdir: str = "/root",
+        env: dict[str, str] | None = None,
+        timeout: int = 30,
+    ) -> ExecResult:
+        """Execute a command in a smolBSD VM via SSH."""
+        vm_info = self._vms.get(container_id)
+        if not vm_info:
+            return ExecResult(exit_code=-1, stdout="", stderr=f"VM {container_id} not found")
+
+        # Build command with workdir and env
+        parts = []
+        if env:
+            for key, value in env.items():
+                if not _ENV_KEY_RE.match(key):
+                    raise ValueError(f"Invalid environment variable name: {key!r}")
+                parts.append(f"export {key}={shlex.quote(value)}")
+        if workdir:
+            parts.append(f"cd {shlex.quote(workdir)} 2>/dev/null || true")
+        parts.append(shlex.join(cmd))
+        full_cmd = " && ".join(parts)
+
+        try:
+            return await asyncio.wait_for(
+                self._ssh_exec(vm_info["port"], full_cmd),
+                timeout=timeout,
+            )
+        except TimeoutError:
+            return ExecResult(exit_code=124, stdout="", stderr=f"Timed out after {timeout}s")
+        except Exception as e:
+            logger.error("Error executing command in VM %s: %s", container_id, e)
+            return ExecResult(exit_code=-1, stdout="", stderr=str(e))
+
     async def container_exists(self, container_id: str) -> bool:
-        """Check if a smolBSD VM exists and is running."""
-        proc = await asyncio.create_subprocess_exec(
-            "incus",
-            "info",
-            container_id,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, _ = await proc.communicate()
-        if proc.returncode != 0:
+        """Check if a VM is running by testing SSH connectivity."""
+        vm_info = self._vms.get(container_id)
+        if not vm_info:
             return False
-        return "Status: RUNNING" in stdout.decode(errors="replace")
+        try:
+            _, writer = await asyncio.wait_for(
+                asyncio.open_connection("127.0.0.1", vm_info["port"]),
+                timeout=2,
+            )
+            writer.close()
+            await writer.wait_closed()
+            return True
+        except (ConnectionRefusedError, TimeoutError, OSError):
+            return False
 
     async def find_container(self, session_id: str) -> str | None:
         """Find a running VM by session ID."""
-        vm_name = self._vms.get(session_id)
-        if vm_name and await self.container_exists(vm_name):
+        vm_name = _safe_vm_name(session_id)
+        if vm_name in self._vms and await self.container_exists(vm_name):
             return vm_name
-
-        # Try the expected name
-        expected = _safe_vm_name(session_id)
-        if await self.container_exists(expected):
-            self._vms[session_id] = expected
-            return expected
-
         return None
 
     async def delete_container(self, container_id: str) -> None:
-        """Stop and remove a smolBSD VM."""
+        """Kill the QEMU process for a VM."""
+        vm_info = self._vms.pop(container_id, None)
+        if not vm_info:
+            return
+        # Kill QEMU by finding the process using the SSH port
         try:
             proc = await asyncio.create_subprocess_exec(
-                self._sandbox_stop,
-                container_id,
-                "--rm",
+                "fuser", "-k", f"{vm_info['port']}/tcp",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
             await proc.communicate()
-            # Clean up cache
-            self._vms = {k: v for k, v in self._vms.items() if v != container_id}
             logger.info("Deleted smolBSD VM %s", container_id)
         except Exception:
             logger.warning("Failed to delete VM %s", container_id, exc_info=True)

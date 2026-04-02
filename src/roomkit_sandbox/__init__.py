@@ -23,6 +23,14 @@ Usage::
 """
 
 from roomkit_sandbox._shared import DEFAULT_IMAGE, ExecResult
+from roomkit_sandbox.commands import CommandBuilder, NativeCommandBuilder, RtkCommandBuilder
 from roomkit_sandbox.executor import ContainerSandboxExecutor
 
-__all__ = ["ContainerSandboxExecutor", "ExecResult", "DEFAULT_IMAGE"]
+__all__ = [
+    "CommandBuilder",
+    "ContainerSandboxExecutor",
+    "DEFAULT_IMAGE",
+    "ExecResult",
+    "NativeCommandBuilder",
+    "RtkCommandBuilder",
+]

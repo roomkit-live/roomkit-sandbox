@@ -1,4 +1,4 @@
-"""Tests for SmolBSDSandboxBackend with mocked CLI calls."""
+"""Tests for SmolBSDSandboxBackend with mocked subprocess calls."""
 
 from __future__ import annotations
 
@@ -16,8 +16,14 @@ def test_safe_vm_name():
 
 
 @pytest.fixture
-def backend():
-    return SmolBSDSandboxBackend(stack="base")
+def backend(tmp_path):
+    # Create minimal smolBSD directory structure
+    (tmp_path / "startnb.sh").touch()
+    (tmp_path / "kernels").mkdir()
+    (tmp_path / "kernels" / "netbsd-SMOL").touch()
+    (tmp_path / "images").mkdir()
+    (tmp_path / "images" / "rescue-amd64.img").touch()
+    return SmolBSDSandboxBackend(smolbsd_dir=str(tmp_path))
 
 
 class MockProcess:
@@ -31,24 +37,9 @@ class MockProcess:
 
 
 @pytest.mark.asyncio
-async def test_create_container(backend):
-    with patch("asyncio.create_subprocess_exec") as mock_exec:
-        # First call: incus info (container_exists check) — not found
-        # Second call: sandbox-start — success
-        # Third call: sandbox --cmd (env setup) — skipped (no env)
-        # Fourth call: sandbox --cmd (mkdir) — success
-        mock_exec.side_effect = [
-            MockProcess(returncode=1),  # incus info → not found
-            MockProcess(returncode=0),  # sandbox-start → success
-            MockProcess(returncode=0),  # sandbox --cmd mkdir → success
-        ]
-        name = await backend.create_container("test-session")
-        assert name == "sandbox-test-session"
-        assert mock_exec.call_count == 3
-
-
-@pytest.mark.asyncio
 async def test_exec_command(backend):
+    # Pre-register a VM so exec_command can find it
+    backend._vms["sandbox-test"] = {"session_id": "test", "port": 22022}
     with patch("asyncio.create_subprocess_exec") as mock_exec:
         mock_exec.return_value = MockProcess(returncode=0, stdout=b"file1.py\nfile2.py\n")
         result = await backend.exec_command("sandbox-test", ["ls", "-la"])
@@ -57,39 +48,60 @@ async def test_exec_command(backend):
 
 
 @pytest.mark.asyncio
-async def test_container_exists(backend):
-    with patch("asyncio.create_subprocess_exec") as mock_exec:
-        mock_exec.return_value = MockProcess(returncode=0, stdout=b"Name: test\nStatus: RUNNING\n")
+async def test_exec_command_vm_not_found(backend):
+    result = await backend.exec_command("nonexistent", ["ls"])
+    assert result.exit_code == -1
+    assert "not found" in result.stderr
+
+
+@pytest.mark.asyncio
+async def test_container_exists_true(backend):
+    backend._vms["sandbox-test"] = {"session_id": "test", "port": 22022}
+    with patch("asyncio.open_connection") as mock_conn:
+
+        class MockWriter:
+            def close(self):
+                pass
+
+            async def wait_closed(self):
+                pass
+
+        mock_conn.return_value = (None, MockWriter())
         assert await backend.container_exists("sandbox-test")
 
 
 @pytest.mark.asyncio
-async def test_container_not_exists(backend):
-    with patch("asyncio.create_subprocess_exec") as mock_exec:
-        mock_exec.return_value = MockProcess(returncode=1)
-        assert not await backend.container_exists("nonexistent")
+async def test_container_exists_false(backend):
+    assert not await backend.container_exists("nonexistent")
 
 
 @pytest.mark.asyncio
 async def test_find_container(backend):
-    with patch("asyncio.create_subprocess_exec") as mock_exec:
-        mock_exec.return_value = MockProcess(returncode=0, stdout=b"Status: RUNNING\n")
+    backend._vms["sandbox-test-session"] = {"session_id": "test-session", "port": 22022}
+    with patch("asyncio.open_connection") as mock_conn:
+
+        class MockWriter:
+            def close(self):
+                pass
+
+            async def wait_closed(self):
+                pass
+
+        mock_conn.return_value = (None, MockWriter())
         found = await backend.find_container("test-session")
         assert found == "sandbox-test-session"
 
 
 @pytest.mark.asyncio
 async def test_find_container_not_found(backend):
-    with patch("asyncio.create_subprocess_exec") as mock_exec:
-        mock_exec.return_value = MockProcess(returncode=1)
-        found = await backend.find_container("missing")
-        assert found is None
+    found = await backend.find_container("missing")
+    assert found is None
 
 
 @pytest.mark.asyncio
 async def test_delete_container(backend):
+    backend._vms["sandbox-test"] = {"session_id": "test", "port": 22022}
     with patch("asyncio.create_subprocess_exec") as mock_exec:
         mock_exec.return_value = MockProcess(returncode=0)
         await backend.delete_container("sandbox-test")
-        # sandbox-stop should be called
-        assert mock_exec.called
+        assert "sandbox-test" not in backend._vms
