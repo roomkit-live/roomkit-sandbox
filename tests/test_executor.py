@@ -26,6 +26,7 @@ class MockBackend:
 
     async def exec_command(self, container_id, cmd, workdir="/workspace", env=None, timeout=30):
         self.executed.append((container_id, cmd))
+        self.last_timeout = timeout
         return self._next_result
 
     async def container_exists(self, container_id):
@@ -36,6 +37,9 @@ class MockBackend:
         if self._containers.get(cid):
             return cid
         return None
+
+    async def delete_container(self, container_id):
+        self._containers.pop(container_id, None)
 
 
 @pytest.fixture
@@ -116,10 +120,15 @@ async def test_setup_commands(backend):
 async def test_per_call_timeout(backend):
     executor = ContainerSandboxExecutor(backend=backend, session_id="timeout-test")
     await executor.execute("bash", {"command": "make test", "timeout": 120})
-    # The backend should receive the per-call timeout
-    # (We can't directly assert timeout passed to exec_command with this mock,
-    # but we verify it doesn't crash)
     assert len(backend.executed) == 1
+    assert backend.last_timeout == 120
+
+
+@pytest.mark.asyncio
+async def test_per_call_timeout_uses_default_on_invalid(backend):
+    executor = ContainerSandboxExecutor(backend=backend, session_id="timeout-test", timeout=30)
+    await executor.execute("bash", {"command": "ls", "timeout": -5})
+    assert backend.last_timeout == 30
 
 
 @pytest.mark.asyncio

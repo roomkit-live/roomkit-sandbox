@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shlex
+from collections.abc import Callable
 from typing import Any
 
 
@@ -72,6 +73,8 @@ def _build_write(args: dict[str, Any]) -> list[str]:
 
 
 def _build_edit(args: dict[str, Any]) -> list[str]:
+    # Safety: !r (repr) produces valid Python string literals, preventing injection.
+    # The list-based exec bypasses the shell entirely.
     path = args.get("path", "")
     old_string = args.get("old_string", "")
     new_string = args.get("new_string", "")
@@ -91,7 +94,12 @@ def _build_edit(args: dict[str, Any]) -> list[str]:
 
 def _build_delete(args: dict[str, Any]) -> list[str]:
     path = shlex.quote(args.get("path", ""))
-    return ["sh", "-c", f"rm -f {path} && echo 'Deleted {path}' || rmdir {path}"]
+    return [
+        "sh", "-c",
+        f"if [ -d {path} ]; then rm -rf {path}; else rm -f {path}; fi"
+        f" && echo Deleted {path}"
+        f" || {{ echo \"Failed to delete {path}\" >&2; exit 1; }}",
+    ]
 
 
 def _build_diff(args: dict[str, Any]) -> list[str]:
@@ -103,7 +111,9 @@ def _build_bash(args: dict[str, Any]) -> list[str]:
     return ["rtk", "summary", command_str]
 
 
-_BUILDERS: dict[str, Any] = {
+_BuilderFn = Callable[[dict[str, Any]], list[str]]
+
+_BUILDERS: dict[str, _BuilderFn] = {
     "read": _build_read,
     "write": _build_write,
     "edit": _build_edit,

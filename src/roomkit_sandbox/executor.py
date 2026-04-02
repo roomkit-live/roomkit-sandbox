@@ -30,7 +30,7 @@ from typing import Any, Protocol, runtime_checkable
 from roomkit.sandbox import SandboxExecutor, SandboxResult
 from roomkit.sandbox.tools import SANDBOX_TOOL_SCHEMAS
 
-from roomkit_sandbox._shared import DEFAULT_IMAGE
+from roomkit_sandbox._shared import DEFAULT_IMAGE, ExecResult
 from roomkit_sandbox.commands import build_rtk_command
 
 logger = logging.getLogger("roomkit_sandbox")
@@ -58,7 +58,7 @@ class ContainerBackendProtocol(Protocol):
         workdir: str = ...,
         env: dict[str, str] | None = ...,
         timeout: int = ...,
-    ) -> Any: ...
+    ) -> ExecResult: ...
 
     async def container_exists(self, container_id: str) -> bool: ...
 

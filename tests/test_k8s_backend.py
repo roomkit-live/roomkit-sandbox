@@ -117,7 +117,6 @@ class MockStream:
 def backend():
     b = KubernetesSandboxBackend(namespace="test")
     b._core_api = MockCoreApi()
-    b._exec_api = MockCoreApi()
     b._stream = MockStream(MockStreamResp(stdout="hello\n", exit_code=0))
     return b
 

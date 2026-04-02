@@ -12,6 +12,7 @@ import asyncio
 import logging
 import re
 import shlex
+import time
 from typing import Any
 
 from roomkit_sandbox._shared import DEFAULT_IMAGE, ExecResult
@@ -155,8 +156,6 @@ class KubernetesSandboxBackend:
 
     async def _wait_for_pod_ready(self, pod_name: str, timeout: int = 60) -> None:
         """Wait for pod to reach Running state."""
-        import time
-
         start = time.monotonic()
 
         while True:

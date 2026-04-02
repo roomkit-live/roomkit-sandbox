@@ -93,6 +93,53 @@ def test_build_delete():
     assert "rm" in cmd[2]
 
 
+def test_build_write_with_special_chars():
+    cmd = build_rtk_command("write", {"path": "/tmp/it's a file.txt", "content": "line1\nline2"})
+    assert cmd[0] == "sh"
+    # Both path and content must be shell-quoted
+    assert "it" in cmd[2]
+    assert "line1" in cmd[2]
+
+
+def test_build_write_empty_content():
+    cmd = build_rtk_command("write", {"path": "/tmp/empty.txt", "content": ""})
+    assert cmd[0] == "sh"
+    assert "/tmp/empty.txt" in cmd[2]
+
+
+def test_build_edit_with_quotes():
+    cmd = build_rtk_command("edit", {
+        "path": "main.py",
+        "old_string": "msg = 'hello'",
+        "new_string": 'msg = "world"',
+    })
+    assert cmd[0] == "python3"
+    assert "hello" in cmd[2]
+    assert "world" in cmd[2]
+
+
+def test_build_edit_with_newlines():
+    cmd = build_rtk_command("edit", {
+        "path": "main.py",
+        "old_string": "line1\nline2",
+        "new_string": "new1\nnew2",
+    })
+    assert cmd[0] == "python3"
+    assert "line1" in cmd[2]
+
+
+def test_build_delete_path_with_spaces():
+    cmd = build_rtk_command("delete", {"path": "/tmp/my file.txt"})
+    assert cmd[0] == "sh"
+    # Path must be quoted to handle spaces
+    assert "my file.txt" in cmd[2]
+
+
+def test_build_read_missing_path():
+    cmd = build_rtk_command("read", {})
+    assert cmd == ["rtk", "read", "."]
+
+
 def test_unknown_command():
     cmd = build_rtk_command("unknown", {})
     assert cmd[0] == "echo"
