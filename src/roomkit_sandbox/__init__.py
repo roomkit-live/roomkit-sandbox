@@ -21,6 +21,7 @@ Usage::
     agent = Agent("my-agent", provider=..., sandbox=sandbox)
 """
 
+from roomkit_sandbox._shared import DEFAULT_IMAGE, ExecResult
 from roomkit_sandbox.executor import ContainerSandboxExecutor
 
-__all__ = ["ContainerSandboxExecutor"]
+__all__ = ["ContainerSandboxExecutor", "ExecResult", "DEFAULT_IMAGE"]

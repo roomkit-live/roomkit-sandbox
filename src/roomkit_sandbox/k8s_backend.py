@@ -14,11 +14,11 @@ import re
 import shlex
 from typing import Any
 
-from roomkit_sandbox.backend import ExecResult
+from roomkit_sandbox._shared import DEFAULT_IMAGE, ExecResult
 
 logger = logging.getLogger("roomkit_sandbox.k8s")
 
-DEFAULT_IMAGE = "ghcr.io/roomkit-live/sandbox:latest"
+_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _safe_pod_name(session_id: str) -> str:
@@ -57,7 +57,6 @@ class KubernetesSandboxBackend:
         self._extra_env = extra_env or {}
         self._core_api: Any = None
         self._stream: Any = None
-        self._exec_api: Any = None
         self._session_pods: dict[str, str] = {}
 
     def _init_client(self) -> None:
@@ -74,7 +73,6 @@ class KubernetesSandboxBackend:
         except config.ConfigException:
             config.load_kube_config()
         self._core_api = client.CoreV1Api()
-        self._exec_api = client.CoreV1Api()
         self._stream = stream
 
     async def create_container(
@@ -97,7 +95,6 @@ class KubernetesSandboxBackend:
             V1SecurityContext,
         )
         pod_name = _safe_pod_name(session_id)
-        loop = asyncio.get_running_loop()
 
         # Build labels
         k8s_labels = {
@@ -142,9 +139,8 @@ class KubernetesSandboxBackend:
         )
 
         try:
-            await loop.run_in_executor(
-                None,
-                lambda: self._core_api.create_namespaced_pod(self._namespace, pod),
+            await asyncio.to_thread(
+                self._core_api.create_namespaced_pod, self._namespace, pod,
             )
         except Exception as e:
             if "AlreadyExists" in str(e):
@@ -159,15 +155,14 @@ class KubernetesSandboxBackend:
 
     async def _wait_for_pod_ready(self, pod_name: str, timeout: int = 60) -> None:
         """Wait for pod to reach Running state."""
-        self._init_client()
-        loop = asyncio.get_running_loop()
-        start = loop.time()
+        import time
+
+        start = time.monotonic()
 
         while True:
             try:
-                pod = await loop.run_in_executor(
-                    None,
-                    lambda: self._core_api.read_namespaced_pod(pod_name, self._namespace),
+                pod = await asyncio.to_thread(
+                    self._core_api.read_namespaced_pod, pod_name, self._namespace,
                 )
                 if pod.status.phase == "Running":
                     if pod.status.container_statuses:
@@ -180,7 +175,7 @@ class KubernetesSandboxBackend:
                 if "not found" not in str(e).lower():
                     raise
 
-            if loop.time() - start > timeout:
+            if time.monotonic() - start > timeout:
                 raise TimeoutError(f"Pod {pod_name} not ready after {timeout}s")
             await asyncio.sleep(1)
 
@@ -194,7 +189,6 @@ class KubernetesSandboxBackend:
     ) -> ExecResult:
         """Execute a command in a sandbox pod."""
         self._init_client()
-        loop = asyncio.get_running_loop()
 
         # Build exec command with workdir/env prefix
         exec_cmd = cmd
@@ -202,6 +196,8 @@ class KubernetesSandboxBackend:
             prefix_parts = []
             if env:
                 for key, value in env.items():
+                    if not _ENV_KEY_RE.match(key):
+                        raise ValueError(f"Invalid environment variable name: {key!r}")
                     safe_value = value.replace("'", "'\\''")
                     prefix_parts.append(f"export {key}='{safe_value}'")
             if workdir:
@@ -215,7 +211,7 @@ class KubernetesSandboxBackend:
 
         def _exec_blocking() -> ExecResult:
             resp = self._stream.stream(
-                self._exec_api.connect_get_namespaced_pod_exec,
+                self._core_api.connect_get_namespaced_pod_exec,
                 container_id,
                 self._namespace,
                 command=exec_cmd,
@@ -240,25 +236,17 @@ class KubernetesSandboxBackend:
                 stderr=stderr,
             )
 
-        try:
-            return await asyncio.wait_for(
-                loop.run_in_executor(None, _exec_blocking),
-                timeout=timeout,
-            )
-        except TimeoutError:
-            return ExecResult(exit_code=124, stdout="", stderr=f"Timed out after {timeout}s")
-        except Exception as e:
-            logger.error("Error executing command in pod %s: %s", container_id, e)
-            return ExecResult(exit_code=-1, stdout="", stderr=str(e))
+        return await asyncio.wait_for(
+            asyncio.to_thread(_exec_blocking),
+            timeout=timeout,
+        )
 
     async def container_exists(self, container_id: str) -> bool:
         """Check if a pod exists and is running."""
         self._init_client()
-        loop = asyncio.get_running_loop()
         try:
-            pod = await loop.run_in_executor(
-                None,
-                lambda: self._core_api.read_namespaced_pod(container_id, self._namespace),
+            pod = await asyncio.to_thread(
+                self._core_api.read_namespaced_pod, container_id, self._namespace,
             )
             return pod.status.phase == "Running"
         except Exception:
@@ -272,14 +260,11 @@ class KubernetesSandboxBackend:
             return pod_name
 
         self._init_client()
-        loop = asyncio.get_running_loop()
         try:
-            pods = await loop.run_in_executor(
-                None,
-                lambda: self._core_api.list_namespaced_pod(
-                    namespace=self._namespace,
-                    label_selector=f"session={session_id},managed-by=roomkit-sandbox",
-                ),
+            pods = await asyncio.to_thread(
+                self._core_api.list_namespaced_pod,
+                namespace=self._namespace,
+                label_selector=f"session={session_id},managed-by=roomkit-sandbox",
             )
             for pod in pods.items:
                 if pod.status.phase == "Running":
@@ -292,11 +277,9 @@ class KubernetesSandboxBackend:
     async def delete_container(self, container_id: str) -> None:
         """Delete a sandbox pod."""
         self._init_client()
-        loop = asyncio.get_running_loop()
         try:
-            await loop.run_in_executor(
-                None,
-                lambda: self._core_api.delete_namespaced_pod(container_id, self._namespace),
+            await asyncio.to_thread(
+                self._core_api.delete_namespaced_pod, container_id, self._namespace,
             )
             # Clean up cache
             self._session_pods = {

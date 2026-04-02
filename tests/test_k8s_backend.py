@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import pytest
 
-from roomkit_sandbox.backend import ExecResult
 from roomkit_sandbox.k8s_backend import KubernetesSandboxBackend, _k8s_label, _safe_pod_name
 
 

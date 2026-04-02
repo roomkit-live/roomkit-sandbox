@@ -12,28 +12,17 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-from dataclasses import dataclass
 from typing import Any
 
-logger = logging.getLogger("roomkit_sandbox.backend")
+from roomkit_sandbox._shared import DEFAULT_IMAGE, ExecResult
 
-DEFAULT_IMAGE = "ghcr.io/roomkit-live/sandbox:latest"
+logger = logging.getLogger("roomkit_sandbox.docker_backend")
+
+# Re-export for backward compatibility
+__all__ = ["DockerSandboxBackend", "ExecResult", "DEFAULT_IMAGE"]
+
 DEFAULT_MEMORY_LIMIT = "1g"
 DEFAULT_CPU_COUNT = 1
-
-
-@dataclass
-class ExecResult:
-    """Result of executing a command in a container.
-
-    Any external container backend passed to
-    :class:`~roomkit_sandbox.ContainerSandboxExecutor` must return
-    objects with these three attributes from ``exec_command``.
-    """
-
-    exit_code: int
-    stdout: str
-    stderr: str
 
 
 class DockerSandboxBackend:

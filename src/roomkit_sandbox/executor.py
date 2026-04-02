@@ -15,7 +15,7 @@ Supports two modes:
    ``create_container``, ``exec_command``, ``container_exists``,
    and ``find_container``.  ``exec_command`` must return an object
    with ``exit_code``, ``stdout``, and ``stderr`` attributes (see
-   :class:`~roomkit_sandbox.backend.ExecResult`)::
+   :class:`~roomkit_sandbox.docker_backend.ExecResult`)::
 
        sandbox = ContainerSandboxExecutor(backend=my_backend)
 """
@@ -30,6 +30,7 @@ from typing import Any, Protocol, runtime_checkable
 from roomkit.sandbox import SandboxExecutor, SandboxResult
 from roomkit.sandbox.tools import SANDBOX_TOOL_SCHEMAS
 
+from roomkit_sandbox._shared import DEFAULT_IMAGE
 from roomkit_sandbox.commands import build_rtk_command
 
 logger = logging.getLogger("roomkit_sandbox")
@@ -63,6 +64,8 @@ class ContainerBackendProtocol(Protocol):
 
     async def find_container(self, session_id: str) -> str | None: ...
 
+    async def delete_container(self, container_id: str) -> None: ...
+
 
 class ContainerSandboxExecutor(SandboxExecutor):
     """Runs sandbox commands via RTK in lightweight Docker containers.
@@ -70,7 +73,7 @@ class ContainerSandboxExecutor(SandboxExecutor):
     Args:
         backend: Container backend (Docker, Kubernetes, or any compatible
             implementation).  If ``None``, creates a built-in
-            :class:`~roomkit_sandbox.backend.DockerSandboxBackend`.
+            :class:`~roomkit_sandbox.docker_backend.DockerSandboxBackend`.
         image: Docker image for sandbox containers (only used with
             built-in backend).
         session_id: Identifier for container reuse across calls.
@@ -86,7 +89,7 @@ class ContainerSandboxExecutor(SandboxExecutor):
     def __init__(
         self,
         backend: Any | None = None,
-        image: str = "ghcr.io/roomkit-live/sandbox:latest",
+        image: str = DEFAULT_IMAGE,
         session_id: str | None = None,
         workdir: str = "/workspace",
         timeout: int = 30,
@@ -106,7 +109,7 @@ class ContainerSandboxExecutor(SandboxExecutor):
         if backend is not None:
             self._backend = backend
         else:
-            from roomkit_sandbox.backend import DockerSandboxBackend
+            from roomkit_sandbox.docker_backend import DockerSandboxBackend
 
             self._backend = DockerSandboxBackend(image=image)
 

@@ -6,13 +6,7 @@ import pytest
 from roomkit.sandbox.tools import SANDBOX_TOOL_PREFIX, SANDBOX_TOOL_SCHEMAS
 
 from roomkit_sandbox import ContainerSandboxExecutor
-
-
-class MockExecResult:
-    def __init__(self, exit_code: int = 0, stdout: str = "", stderr: str = ""):
-        self.exit_code = exit_code
-        self.stdout = stdout
-        self.stderr = stderr
+from roomkit_sandbox._shared import ExecResult
 
 
 class MockBackend:
@@ -22,7 +16,7 @@ class MockBackend:
         self.created: list[str] = []
         self.executed: list[tuple[str, list[str]]] = []
         self._containers: dict[str, bool] = {}
-        self._next_result = MockExecResult()
+        self._next_result = ExecResult(exit_code=0, stdout="", stderr="")
 
     async def create_container(self, session_id, labels=None, env=None):
         cid = f"mock-{session_id}"
@@ -97,7 +91,7 @@ async def test_execute_git(executor, backend):
 
 @pytest.mark.asyncio
 async def test_execute_returns_failure(executor, backend):
-    backend._next_result = MockExecResult(exit_code=1, stderr="not found")
+    backend._next_result = ExecResult(exit_code=1, stdout="", stderr="not found")
     result = await executor.execute("read", {"path": "/nonexistent"})
     assert not result.success
     assert result.exit_code == 1
