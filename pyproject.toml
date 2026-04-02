@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "roomkit-sandbox"
-version = "0.1.0"
+version = "0.2.0"
 description = "Container-based sandbox executor for RoomKit — gives AI agents sandboxed command execution via RTK"
 readme = "README.md"
 license = "MIT"
@@ -30,6 +30,7 @@ roomkit = { path = "../roomkit", editable = true }
 
 [project.optional-dependencies]
 docker = ["docker>=7.0"]
+kubernetes = ["kubernetes>=31.0"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/roomkit_sandbox"]
@@ -55,6 +56,7 @@ testpaths = ["tests"]
 [dependency-groups]
 dev = [
     "bandit>=1.9.4",
+    "kubernetes>=35.0.0",
     "pytest>=9.0.2",
     "pytest-asyncio>=1.3.0",
     "ruff>=0.15.8",

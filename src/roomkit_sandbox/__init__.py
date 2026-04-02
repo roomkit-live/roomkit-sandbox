@@ -2,8 +2,13 @@
 
 Provides :class:`ContainerSandboxExecutor`, a ready-made
 :class:`~roomkit.sandbox.SandboxExecutor` implementation that runs
-commands inside lightweight Docker containers using RTK for
-token-optimized output.
+commands inside lightweight containers using RTK for token-optimized
+output.
+
+Backends:
+
+- :class:`DockerSandboxBackend` — for Docker (``pip install roomkit-sandbox[docker]``)
+- :class:`KubernetesSandboxBackend` — for Kubernetes (``pip install roomkit-sandbox[kubernetes]``)
 
 Usage::
 
