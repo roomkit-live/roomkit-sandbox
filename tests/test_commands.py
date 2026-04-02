@@ -68,6 +68,31 @@ def test_build_bash():
     assert cmd == ["rtk", "summary", "make test"]
 
 
+def test_build_write():
+    cmd = build_rtk_command("write", {"path": "/tmp/test.txt", "content": "hello world"})
+    assert cmd[0] == "sh"
+    assert "/tmp/test.txt" in cmd[2]
+    assert "hello world" in cmd[2]
+
+
+def test_build_edit():
+    cmd = build_rtk_command("edit", {
+        "path": "main.py",
+        "old_string": "def foo():",
+        "new_string": "def bar():",
+    })
+    assert cmd[0] == "python3"
+    assert "main.py" in cmd[2]
+    assert "def foo():" in cmd[2]
+    assert "def bar():" in cmd[2]
+
+
+def test_build_delete():
+    cmd = build_rtk_command("delete", {"path": "/tmp/old.txt"})
+    assert cmd[0] == "sh"
+    assert "rm" in cmd[2]
+
+
 def test_unknown_command():
     cmd = build_rtk_command("unknown", {})
     assert cmd[0] == "echo"

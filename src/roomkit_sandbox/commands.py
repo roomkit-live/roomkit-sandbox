@@ -64,6 +64,36 @@ def _build_git(args: dict[str, Any]) -> list[str]:
     return ["rtk", "git"] + shlex.split(raw)
 
 
+def _build_write(args: dict[str, Any]) -> list[str]:
+    path = shlex.quote(args.get("path", ""))
+    content = args.get("content", "")
+    # Use printf to handle special characters correctly
+    return ["sh", "-c", f"printf '%s' {shlex.quote(content)} > {path}"]
+
+
+def _build_edit(args: dict[str, Any]) -> list[str]:
+    path = args.get("path", "")
+    old_string = args.get("old_string", "")
+    new_string = args.get("new_string", "")
+    # Use Python for reliable string replacement (available in sandbox via busybox)
+    script = (
+        f"import sys; p={path!r}; "
+        f"t=open(p).read(); "
+        f"o={old_string!r}; n={new_string!r}; "
+        f"c=t.count(o); "
+        f"print(f'Error: {{c}} matches found, expected 1',file=sys.stderr) or sys.exit(1) "
+        f"if c!=1 else None; "
+        f"open(p,'w').write(t.replace(o,n,1)); "
+        f"print(f'Replaced 1 occurrence in {{p}}')"
+    )
+    return ["python3", "-c", script]
+
+
+def _build_delete(args: dict[str, Any]) -> list[str]:
+    path = shlex.quote(args.get("path", ""))
+    return ["sh", "-c", f"rm -f {path} && echo 'Deleted {path}' || rmdir {path}"]
+
+
 def _build_diff(args: dict[str, Any]) -> list[str]:
     return ["rtk", "diff", args.get("file_a", ""), args.get("file_b", "")]
 
@@ -75,10 +105,13 @@ def _build_bash(args: dict[str, Any]) -> list[str]:
 
 _BUILDERS: dict[str, Any] = {
     "read": _build_read,
+    "write": _build_write,
+    "edit": _build_edit,
     "ls": _build_ls,
     "grep": _build_grep,
     "find": _build_find,
     "git": _build_git,
     "diff": _build_diff,
+    "delete": _build_delete,
     "bash": _build_bash,
 }
