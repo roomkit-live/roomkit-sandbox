@@ -7,7 +7,7 @@ RUN apk add --no-cache \
     git \
     curl \
     jq \
-    openssh-client
+    python3
 
 # Install RTK — static Rust binary, no dependencies
 # Checksum verified to prevent supply chain attacks
