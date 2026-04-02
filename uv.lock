@@ -610,7 +610,7 @@ dev = [{ name = "setuptools", specifier = "<81" }]
 
 [[package]]
 name = "roomkit-sandbox"
-version = "0.2.0"
+version = "0.2.1"
 source = { editable = "." }
 dependencies = [
     { name = "roomkit" },

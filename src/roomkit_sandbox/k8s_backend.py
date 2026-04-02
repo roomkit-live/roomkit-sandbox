@@ -35,6 +35,13 @@ def _k8s_label(key: str) -> str:
     return label[:63] or "label"
 
 
+def _k8s_label_value(value: str) -> str:
+    """Sanitize a label value to K8s-compatible format (alphanumeric, -, _, .)."""
+    sanitized = re.sub(r"[^a-zA-Z0-9_.-]", "-", value)
+    sanitized = sanitized.strip("-_.")
+    return sanitized[:63] or "value"
+
+
 class KubernetesSandboxBackend:
     """Kubernetes backend for running sandbox pods.
 
@@ -100,14 +107,14 @@ class KubernetesSandboxBackend:
 
         pod_name = _safe_pod_name(session_id)
 
-        # Build labels
+        # Build labels (sanitize values — K8s forbids colons etc.)
         k8s_labels = {
             "app": "roomkit-sandbox",
-            "session": session_id,
+            "session": _k8s_label_value(session_id),
             "managed-by": "roomkit-sandbox",
         }
         for k, v in (labels or {}).items():
-            k8s_labels[_k8s_label(k)] = v
+            k8s_labels[_k8s_label(k)] = _k8s_label_value(v)
 
         # Build env vars
         merged_env = dict(self._extra_env)
@@ -269,10 +276,11 @@ class KubernetesSandboxBackend:
 
         self._init_client()
         try:
+            safe_session = _k8s_label_value(session_id)
             pods = await asyncio.to_thread(
                 self._core_api.list_namespaced_pod,
                 namespace=self._namespace,
-                label_selector=f"session={session_id},managed-by=roomkit-sandbox",
+                label_selector=f"session={safe_session},managed-by=roomkit-sandbox",
             )
             for pod in pods.items:
                 if pod.status.phase == "Running":

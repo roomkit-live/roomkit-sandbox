@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from roomkit_sandbox.k8s_backend import KubernetesSandboxBackend, _k8s_label, _safe_pod_name
+from roomkit_sandbox.k8s_backend import (
+    KubernetesSandboxBackend,
+    _k8s_label,
+    _k8s_label_value,
+    _safe_pod_name,
+)
 
 
 def test_safe_pod_name():
@@ -18,6 +23,14 @@ def test_k8s_label():
     assert _k8s_label("simple") == "simple"
     assert _k8s_label("key with spaces") == "key-with-spaces"
     assert len(_k8s_label("a" * 100)) <= 63
+
+
+def test_k8s_label_value():
+    assert _k8s_label_value("simple") == "simple"
+    assert _k8s_label_value("sandbox:user123") == "sandbox-user123"
+    assert _k8s_label_value("a-b_c.d") == "a-b_c.d"
+    assert _k8s_label_value("has spaces!") == "has-spaces"
+    assert len(_k8s_label_value("a" * 100)) <= 63
 
 
 class MockPodStatus:
