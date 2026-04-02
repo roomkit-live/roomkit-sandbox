@@ -14,8 +14,10 @@ def test_safe_pod_name():
 
 
 def test_k8s_label():
-    assert _k8s_label("luge.tenant_id") == "luge-tenant_id"
+    assert _k8s_label("luge.tenant_id") == "luge.tenant_id"
     assert _k8s_label("simple") == "simple"
+    assert _k8s_label("key with spaces") == "key-with-spaces"
+    assert len(_k8s_label("a" * 100)) <= 63
 
 
 class MockPodStatus:
@@ -130,9 +132,7 @@ async def test_create_container(backend):
 
 @pytest.mark.asyncio
 async def test_create_container_with_labels(backend):
-    pod_name = await backend.create_container(
-        "sess1", labels={"luge.type": "sandbox"}
-    )
+    pod_name = await backend.create_container("sess1", labels={"luge.type": "sandbox"})
     assert pod_name.startswith("sandbox-")
 
 

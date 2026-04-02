@@ -9,6 +9,7 @@ Backends:
 
 - :class:`DockerSandboxBackend` — for Docker (``pip install roomkit-sandbox[docker]``)
 - :class:`KubernetesSandboxBackend` — for Kubernetes (``pip install roomkit-sandbox[kubernetes]``)
+- :class:`SmolBSDSandboxBackend` — for smolBSD microVMs (local VM isolation)
 
 Usage::
 

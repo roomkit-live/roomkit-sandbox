@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -51,9 +50,7 @@ async def test_create_container(backend):
 @pytest.mark.asyncio
 async def test_exec_command(backend):
     with patch("asyncio.create_subprocess_exec") as mock_exec:
-        mock_exec.return_value = MockProcess(
-            returncode=0, stdout=b"file1.py\nfile2.py\n"
-        )
+        mock_exec.return_value = MockProcess(returncode=0, stdout=b"file1.py\nfile2.py\n")
         result = await backend.exec_command("sandbox-test", ["ls", "-la"])
         assert result.exit_code == 0
         assert "file1.py" in result.stdout
@@ -62,9 +59,7 @@ async def test_exec_command(backend):
 @pytest.mark.asyncio
 async def test_container_exists(backend):
     with patch("asyncio.create_subprocess_exec") as mock_exec:
-        mock_exec.return_value = MockProcess(
-            returncode=0, stdout=b"Name: test\nStatus: RUNNING\n"
-        )
+        mock_exec.return_value = MockProcess(returncode=0, stdout=b"Name: test\nStatus: RUNNING\n")
         assert await backend.container_exists("sandbox-test")
 
 
@@ -78,9 +73,7 @@ async def test_container_not_exists(backend):
 @pytest.mark.asyncio
 async def test_find_container(backend):
     with patch("asyncio.create_subprocess_exec") as mock_exec:
-        mock_exec.return_value = MockProcess(
-            returncode=0, stdout=b"Status: RUNNING\n"
-        )
+        mock_exec.return_value = MockProcess(returncode=0, stdout=b"Status: RUNNING\n")
         found = await backend.find_container("test-session")
         assert found == "sandbox-test-session"
 

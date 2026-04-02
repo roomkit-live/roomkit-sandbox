@@ -76,15 +76,16 @@ def test_build_write():
 
 
 def test_build_edit():
-    cmd = build_rtk_command("edit", {
-        "path": "main.py",
-        "old_string": "def foo():",
-        "new_string": "def bar():",
-    })
-    assert cmd[0] == "python3"
+    cmd = build_rtk_command(
+        "edit",
+        {
+            "path": "main.py",
+            "old_string": "def foo():",
+            "new_string": "def bar():",
+        },
+    )
+    assert cmd[0] == "sh"
     assert "main.py" in cmd[2]
-    assert "def foo():" in cmd[2]
-    assert "def bar():" in cmd[2]
 
 
 def test_build_delete():
@@ -108,24 +109,29 @@ def test_build_write_empty_content():
 
 
 def test_build_edit_with_quotes():
-    cmd = build_rtk_command("edit", {
-        "path": "main.py",
-        "old_string": "msg = 'hello'",
-        "new_string": 'msg = "world"',
-    })
-    assert cmd[0] == "python3"
-    assert "hello" in cmd[2]
-    assert "world" in cmd[2]
+    cmd = build_rtk_command(
+        "edit",
+        {
+            "path": "main.py",
+            "old_string": "msg = 'hello'",
+            "new_string": 'msg = "world"',
+        },
+    )
+    assert cmd[0] == "sh"
+    assert "main.py" in cmd[2]
 
 
 def test_build_edit_with_newlines():
-    cmd = build_rtk_command("edit", {
-        "path": "main.py",
-        "old_string": "line1\nline2",
-        "new_string": "new1\nnew2",
-    })
-    assert cmd[0] == "python3"
-    assert "line1" in cmd[2]
+    cmd = build_rtk_command(
+        "edit",
+        {
+            "path": "main.py",
+            "old_string": "line1\nline2",
+            "new_string": "new1\nnew2",
+        },
+    )
+    assert cmd[0] == "sh"
+    assert "main.py" in cmd[2]
 
 
 def test_build_delete_path_with_spaces():

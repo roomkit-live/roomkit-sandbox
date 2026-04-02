@@ -29,8 +29,10 @@ def _safe_pod_name(session_id: str) -> str:
 
 
 def _k8s_label(key: str) -> str:
-    """Convert dot-separated keys to K8s-compatible label keys."""
-    return key.replace(".", "-")
+    """Sanitize a label key to K8s-compatible format (alphanumeric, -, _, .)."""
+    label = re.sub(r"[^a-zA-Z0-9_./-]", "-", key)
+    label = label.strip("-_.")
+    return label[:63] or "label"
 
 
 class KubernetesSandboxBackend:
@@ -48,7 +50,7 @@ class KubernetesSandboxBackend:
         image: str = DEFAULT_IMAGE,
         namespace: str = "luge",
         service_account: str = "default",
-        image_pull_secret: str = "",
+        image_pull_secret: str = "",  # nosec B107
         extra_env: dict[str, str] | None = None,
     ) -> None:
         self._image = image
@@ -95,6 +97,7 @@ class KubernetesSandboxBackend:
             V1ResourceRequirements,
             V1SecurityContext,
         )
+
         pod_name = _safe_pod_name(session_id)
 
         # Build labels
@@ -141,7 +144,9 @@ class KubernetesSandboxBackend:
 
         try:
             await asyncio.to_thread(
-                self._core_api.create_namespaced_pod, self._namespace, pod,
+                self._core_api.create_namespaced_pod,
+                self._namespace,
+                pod,
             )
         except Exception as e:
             if "AlreadyExists" in str(e):
@@ -161,7 +166,9 @@ class KubernetesSandboxBackend:
         while True:
             try:
                 pod = await asyncio.to_thread(
-                    self._core_api.read_namespaced_pod, pod_name, self._namespace,
+                    self._core_api.read_namespaced_pod,
+                    pod_name,
+                    self._namespace,
                 )
                 if pod.status.phase == "Running":
                     if pod.status.container_statuses:
@@ -245,7 +252,9 @@ class KubernetesSandboxBackend:
         self._init_client()
         try:
             pod = await asyncio.to_thread(
-                self._core_api.read_namespaced_pod, container_id, self._namespace,
+                self._core_api.read_namespaced_pod,
+                container_id,
+                self._namespace,
             )
             return pod.status.phase == "Running"
         except Exception:
@@ -278,12 +287,12 @@ class KubernetesSandboxBackend:
         self._init_client()
         try:
             await asyncio.to_thread(
-                self._core_api.delete_namespaced_pod, container_id, self._namespace,
+                self._core_api.delete_namespaced_pod,
+                container_id,
+                self._namespace,
             )
             # Clean up cache
-            self._session_pods = {
-                k: v for k, v in self._session_pods.items() if v != container_id
-            }
+            self._session_pods = {k: v for k, v in self._session_pods.items() if v != container_id}
             logger.info("Deleted sandbox pod %s", container_id)
         except Exception:
             logger.warning("Failed to delete pod %s", container_id, exc_info=True)

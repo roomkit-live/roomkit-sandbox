@@ -26,13 +26,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import shlex
 import shutil
-from typing import Any
 
 from roomkit_sandbox._shared import ExecResult
 
 logger = logging.getLogger("roomkit_sandbox.smolbsd")
+
+_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _safe_vm_name(session_id: str) -> str:
@@ -110,12 +112,14 @@ class SmolBSDSandboxBackend:
         if env:
             merged_env.update(env)
         if merged_env:
-            env_script = "; ".join(
-                f"export {k}={shlex.quote(v)}" for k, v in merged_env.items()
-            )
+            env_lines = []
+            for k, v in merged_env.items():
+                if not _ENV_KEY_RE.match(k):
+                    raise ValueError(f"Invalid environment variable name: {k!r}")
+                env_lines.append(shlex.quote(f"export {k}={shlex.quote(v)}"))
             await self._exec_in_vm(
                 vm_name,
-                f"echo '{env_script}' >> /etc/profile.d/sandbox-env.sh",
+                f"printf '%s\\n' {' '.join(env_lines)} >> /etc/profile.d/sandbox-env.sh",
             )
 
         # Create workspace directory
@@ -136,27 +140,26 @@ class SmolBSDSandboxBackend:
         parts = []
         if env:
             for key, value in env.items():
+                if not _ENV_KEY_RE.match(key):
+                    raise ValueError(f"Invalid environment variable name: {key!r}")
                 parts.append(f"export {key}={shlex.quote(value)}")
         if workdir:
             parts.append(f"cd {shlex.quote(workdir)}")
         parts.append(shlex.join(cmd))
         full_cmd = " && ".join(parts)
 
-        try:
-            return await asyncio.wait_for(
-                self._exec_in_vm(container_id, full_cmd),
-                timeout=timeout,
-            )
-        except TimeoutError:
-            return ExecResult(exit_code=124, stdout="", stderr=f"Timed out after {timeout}s")
-        except Exception as e:
-            logger.error("Error executing command in VM %s: %s", container_id, e)
-            return ExecResult(exit_code=-1, stdout="", stderr=str(e))
+        return await asyncio.wait_for(
+            self._exec_in_vm(container_id, full_cmd),
+            timeout=timeout,
+        )
 
     async def _exec_in_vm(self, vm_name: str, command: str) -> ExecResult:
         """Execute a command inside a smolBSD VM via the sandbox CLI."""
         proc = await asyncio.create_subprocess_exec(
-            self._sandbox_cmd, vm_name, "--cmd", command,
+            self._sandbox_cmd,
+            vm_name,
+            "--cmd",
+            command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -170,7 +173,9 @@ class SmolBSDSandboxBackend:
     async def container_exists(self, container_id: str) -> bool:
         """Check if a smolBSD VM exists and is running."""
         proc = await asyncio.create_subprocess_exec(
-            "incus", "info", container_id,
+            "incus",
+            "info",
+            container_id,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -197,7 +202,9 @@ class SmolBSDSandboxBackend:
         """Stop and remove a smolBSD VM."""
         try:
             proc = await asyncio.create_subprocess_exec(
-                self._sandbox_stop, container_id, "--rm",
+                self._sandbox_stop,
+                container_id,
+                "--rm",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )

@@ -15,6 +15,9 @@ Any AI agent (Anthropic, OpenAI, Ollama, vLLM) connected to RoomKit gets access 
 | `sandbox_grep` | Search file contents (regex) |
 | `sandbox_find` | Find files by pattern |
 | `sandbox_git` | Run any git command |
+| `sandbox_write` | Write content to a file |
+| `sandbox_edit` | Replace a string in a file |
+| `sandbox_delete` | Delete a file or directory |
 | `sandbox_diff` | Compare two files |
 | `sandbox_bash` | Execute shell commands |
 

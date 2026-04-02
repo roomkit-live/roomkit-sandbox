@@ -73,32 +73,39 @@ def _build_write(args: dict[str, Any]) -> list[str]:
 
 
 def _build_edit(args: dict[str, Any]) -> list[str]:
-    # Safety: !r (repr) produces valid Python string literals, preventing injection.
-    # The list-based exec bypasses the shell entirely.
+    # Strings passed as env vars — awk ENVIRON reads raw values (no escaping).
+    # index() does literal matching (not regex). Works without Python in container.
     path = args.get("path", "")
     old_string = args.get("old_string", "")
     new_string = args.get("new_string", "")
-    # Use Python for reliable string replacement (available in sandbox via busybox)
-    script = (
-        f"import sys; p={path!r}; "
-        f"t=open(p).read(); "
-        f"o={old_string!r}; n={new_string!r}; "
-        f"c=t.count(o); "
-        f"print(f'Error: {{c}} matches found, expected 1',file=sys.stderr) or sys.exit(1) "
-        f"if c!=1 else None; "
-        f"open(p,'w').write(t.replace(o,n,1)); "
-        f"print(f'Replaced 1 occurrence in {{p}}')"
+    awk_script = (
+        'BEGIN { o=ENVIRON["_OLD"]; n=ENVIRON["_NEW"] } '
+        "{ b = b sep $0; sep = RS } "
+        "END { "
+        "  c=0; t=b; "
+        "  while ((p=index(t,o)) > 0) { c++; t=substr(t,p+length(o)) } "
+        '  if (c!=1) { printf "Error: %d matches, expected 1\\n", c > "/dev/stderr"; exit 1 } '
+        '  p=index(b,o); printf "%s%s%s\\n", substr(b,1,p-1), n, substr(b,p+length(o)) '
+        "}"
     )
-    return ["python3", "-c", script]
+    qp = shlex.quote(path)
+    return [
+        "sh",
+        "-c",
+        f"_OLD={shlex.quote(old_string)} _NEW={shlex.quote(new_string)} "
+        f"awk {shlex.quote(awk_script)} {qp} > {qp}.tmp && mv {qp}.tmp {qp} "
+        f"&& echo 'Replaced 1 occurrence in' {qp}",
+    ]
 
 
 def _build_delete(args: dict[str, Any]) -> list[str]:
     path = shlex.quote(args.get("path", ""))
     return [
-        "sh", "-c",
+        "sh",
+        "-c",
         f"if [ -d {path} ]; then rm -rf {path}; else rm -f {path}; fi"
         f" && echo Deleted {path}"
-        f" || {{ echo \"Failed to delete {path}\" >&2; exit 1; }}",
+        f' || {{ echo "Failed to delete {path}" >&2; exit 1; }}',
     ]
 
 

@@ -15,7 +15,7 @@ Supports two modes:
    ``create_container``, ``exec_command``, ``container_exists``,
    and ``find_container``.  ``exec_command`` must return an object
    with ``exit_code``, ``stdout``, and ``stderr`` attributes (see
-   :class:`~roomkit_sandbox.docker_backend.ExecResult`)::
+   :class:`~roomkit_sandbox.ExecResult`)::
 
        sandbox = ContainerSandboxExecutor(backend=my_backend)
 """
