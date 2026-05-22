@@ -109,9 +109,7 @@ class KubernetesSandboxBackend:
             # kubernetes-client ships the fix in a release.
             def _refresh_sa_token(cfg):
                 try:
-                    with open(
-                        "/var/run/secrets/kubernetes.io/serviceaccount/token"
-                    ) as f:
+                    with open("/var/run/secrets/kubernetes.io/serviceaccount/token") as f:
                         token = f.read().strip()
                     cfg.api_key["BearerToken"] = token
                     cfg.api_key_prefix["BearerToken"] = "Bearer"
