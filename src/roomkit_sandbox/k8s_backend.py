@@ -78,10 +78,54 @@ class KubernetesSandboxBackend:
             raise ImportError(
                 "kubernetes package required: pip install roomkit-sandbox[kubernetes]"
             ) from exc
+        in_cluster = False
         try:
             config.load_incluster_config()
+            in_cluster = True
         except config.ConfigException:
             config.load_kube_config()
+
+        if in_cluster:
+            # Two things to fix here:
+            #
+            # 1. Kubelet rotates the projected SA token (~1h via
+            #    BoundServiceAccountTokenVolume). The kubernetes client
+            #    reads the file once at load_incluster_config() and
+            #    caches it; every call past the TTL then 401s.
+            #
+            # 2. kubernetes-client v36 has an identifier mismatch:
+            #    load_incluster_config() writes the token to
+            #    api_key["authorization"] (legacy), but the generated
+            #    API methods authenticate via auth_settings=
+            #    ["BearerToken"] and look up api_key["BearerToken"].
+            #    Lookup misses → no Authorization header → 401, even
+            #    with a perfectly valid token. The fix is on
+            #    kubernetes-client master (writes BearerToken) but
+            #    is not in any released version as of v36.0.0.
+            #
+            # Solution: a per-call refresh hook that re-reads the
+            # token AND writes it under the BearerToken identifier
+            # the API methods expect. Drop this block once
+            # kubernetes-client ships the fix in a release.
+            def _refresh_sa_token(cfg):
+                try:
+                    with open(
+                        "/var/run/secrets/kubernetes.io/serviceaccount/token"
+                    ) as f:
+                        token = f.read().strip()
+                    cfg.api_key["BearerToken"] = token
+                    cfg.api_key_prefix["BearerToken"] = "Bearer"
+                except FileNotFoundError:
+                    pass
+
+            default_cfg = client.Configuration.get_default_copy()
+            default_cfg.refresh_api_key_hook = _refresh_sa_token
+            # Seed once so the first call doesn't depend on the hook
+            # firing — some kubernetes-client paths only invoke the
+            # hook when api_key already has the identifier.
+            _refresh_sa_token(default_cfg)
+            client.Configuration.set_default(default_cfg)
+
         self._core_api = client.CoreV1Api()
         self._stream = stream
 
