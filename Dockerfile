@@ -7,7 +7,8 @@ RUN apk add --no-cache \
     git \
     curl \
     jq \
-    python3
+    python3 \
+    github-cli
 
 # Install RTK — static Rust binary, no dependencies
 # Checksum verified to prevent supply chain attacks
