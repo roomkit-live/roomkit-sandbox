@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.4] — 2026-05-28
+
+### Added
+
+- **GitHub CLI (`gh`) preinstalled in the sandbox image.** Agents can
+  now run `gh` directly inside sandboxes for issues, PRs, releases,
+  and API calls without bundling the binary at runtime. Installed
+  from `community/github-cli` on the Alpine base (amd64) and from
+  the official `cli.github.com` apt repo on the Debian Trixie base
+  (arm64).
+
+### Changed
+
+- **Multi-arch image build (`linux/amd64` + `linux/arm64`).** The
+  Dockerfile now uses two staged bases — Alpine 3.21 for amd64 and
+  Debian Trixie slim for arm64 — selected via `TARGETARCH`. The arm64
+  base ships glibc because the upstream RTK `aarch64` binary is built
+  against `aarch64-unknown-linux-gnu`. RTK checksums are now declared
+  per architecture (`RTK_SHA256_AMD64`, `RTK_SHA256_ARM64`).
+
 ## [0.2.3] — 2026-05-22
 
 ### Fixed
