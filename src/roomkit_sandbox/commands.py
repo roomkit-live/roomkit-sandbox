@@ -133,7 +133,13 @@ class RtkCommandBuilder(CommandBuilder):
         return ["rtk", "diff", args.get("file_a", ""), args.get("file_b", "")]
 
     def build_bash(self, args: dict[str, Any]) -> list[str]:
-        return ["rtk", "summary", args.get("command", "")]
+        # `rtk err` runs the command and surfaces its errors/warnings verbatim,
+        # so a failing command reaches the agent with the real message it needs
+        # to self-correct. (`rtk summary` could collapse a failure to a bare
+        # "[error] N errors" count, hiding the cause.) On success it reports a
+        # short "[ok]" line; a command whose stdout matters should redirect to a
+        # file and read it back with sandbox_read.
+        return ["rtk", "err", args.get("command", "")]
 
 
 class NativeCommandBuilder(CommandBuilder):

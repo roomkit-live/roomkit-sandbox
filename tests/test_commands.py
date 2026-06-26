@@ -64,8 +64,10 @@ def test_build_diff():
 
 
 def test_build_bash():
+    # `rtk err` surfaces real errors/warnings on failure (rtk summary could
+    # hide a failure behind a bare error count).
     cmd = build_rtk_command("bash", {"command": "make test"})
-    assert cmd == ["rtk", "summary", "make test"]
+    assert cmd == ["rtk", "err", "make test"]
 
 
 def test_build_write():
