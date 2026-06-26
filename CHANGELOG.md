@@ -12,7 +12,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`uv` preinstalled in the sandbox image.** Agents get Astral's fast
   Python package/venv manager for `uv venv`, `uv pip install`, `uv run`,
   and `uvx` inside the sandbox. Copied from the official
-  `ghcr.io/astral-sh/uv` image, pinned by version + digest.
+  `ghcr.io/astral-sh/uv` image, pinned by version + digest. A ready-to-use
+  virtualenv at `/opt/venv` is active by default (`VIRTUAL_ENV` + `PATH`), so
+  `uv pip install <pkg>` works without a per-session `uv venv` and stays off
+  the externally-managed (PEP 668) system Python.
 
 ### Changed
 

@@ -66,6 +66,14 @@ FROM base-${TARGETARCH} AS final
 # matching the target platform automatically.
 COPY --from=ghcr.io/astral-sh/uv:0.11.24@sha256:99ea34acedc870ba4ad11a1f540a1c04267c9f30aadc465a94406f52dfda2c36 /uv /uvx /usr/local/bin/
 
+# A ready-to-use virtualenv so `uv pip install <pkg>` works out of the box
+# (no per-session `uv venv` first) and stays isolated from the Debian system
+# Python, which is externally-managed (PEP 668). uv honours VIRTUAL_ENV; the
+# bin dir on PATH makes `python` and installed console scripts resolve here.
+ENV VIRTUAL_ENV=/opt/venv
+RUN uv venv /opt/venv && chown -R sandbox:sandbox /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
 USER sandbox
 WORKDIR /workspace
 
