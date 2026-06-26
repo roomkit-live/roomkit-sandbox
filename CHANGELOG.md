@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-06-25
+
 ### Added
 
 - **`uv` preinstalled in the sandbox image.** Agents get Astral's fast
@@ -21,6 +23,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Bumped RTK 0.34.2 → 0.42.4** in the sandbox image (both arches);
   per-arch checksums updated accordingly.
+
+### Fixed
+
+- **`sandbox_bash` surfaces real errors now.** `build_bash` mapped to
+  `rtk summary`, which can collapse a failed command to a bare
+  "[error] N errors" count with no message — leaving the agent unable to
+  self-correct (observed: `uv pip install` → "No virtual environment found"
+  was hidden). It now uses `rtk err`, which reports the actual
+  errors/warnings verbatim on failure (and a short "[ok]" on success).
 
 ## [0.2.4] — 2026-05-28
 
@@ -176,7 +187,9 @@ Alpine 3.21 + RTK 0.34.2 + git + bash + curl + jq — **37 MB**.
 - `roomkit >= 0.7.0a8` (with `SandboxExecutor` ABC)
 - `docker >= 7.0` (optional, for standalone use)
 
-[Unreleased]: https://github.com/roomkit-live/roomkit-sandbox/compare/v0.2.3...HEAD
+[Unreleased]: https://github.com/roomkit-live/roomkit-sandbox/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/roomkit-live/roomkit-sandbox/compare/v0.2.4...v0.3.0
+[0.2.4]: https://github.com/roomkit-live/roomkit-sandbox/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/roomkit-live/roomkit-sandbox/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/roomkit-live/roomkit-sandbox/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/roomkit-live/roomkit-sandbox/compare/v0.2.0...v0.2.1
