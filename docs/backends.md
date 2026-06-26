@@ -23,7 +23,7 @@ sandbox = ContainerSandboxExecutor(backend=backend)
 - Docker running
 - `pip install roomkit-sandbox[docker]`
 
-**Image:** Alpine 3.21 + RTK + git + bash + curl + jq (37MB).
+**Image:** Alpine 3.21 + RTK + git + bash + curl + jq + gh + uv (37MB).
 
 ```bash
 docker pull ghcr.io/roomkit-live/sandbox:latest

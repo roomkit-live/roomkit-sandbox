@@ -105,7 +105,7 @@ See [docs/commands.md](docs/commands.md) for details and examples.
 docker pull ghcr.io/roomkit-live/sandbox:latest
 ```
 
-Alpine 3.21 + RTK 0.42.4 + git + bash + curl + jq + gh — **37MB** (amd64; arm64 uses a Debian Trixie base).
+Alpine 3.21 + RTK 0.42.4 + git + bash + curl + jq + gh + uv — **37MB** (amd64; arm64 uses a Debian Trixie base).
 
 ## Architecture
 

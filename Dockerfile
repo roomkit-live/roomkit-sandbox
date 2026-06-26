@@ -59,6 +59,13 @@ RUN useradd -m -s /bin/bash sandbox
 ARG TARGETARCH
 FROM base-${TARGETARCH} AS final
 
+# uv — fast Python package/venv manager, so agents can install deps, create
+# venvs, and run scripts inside the sandbox. Copied from the official Astral
+# image (statically linked, runs on both the Alpine and Debian bases); pinned
+# by version + digest for a verifiable supply chain. buildx pulls the arch
+# matching the target platform automatically.
+COPY --from=ghcr.io/astral-sh/uv:0.11.24@sha256:99ea34acedc870ba4ad11a1f540a1c04267c9f30aadc465a94406f52dfda2c36 /uv /uvx /usr/local/bin/
+
 USER sandbox
 WORKDIR /workspace
 

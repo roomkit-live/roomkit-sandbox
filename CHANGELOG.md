@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`uv` preinstalled in the sandbox image.** Agents get Astral's fast
+  Python package/venv manager for `uv venv`, `uv pip install`, `uv run`,
+  and `uvx` inside the sandbox. Copied from the official
+  `ghcr.io/astral-sh/uv` image, pinned by version + digest.
+
 ### Changed
 
 - **Bumped RTK 0.34.2 → 0.42.4** in the sandbox image (both arches);
