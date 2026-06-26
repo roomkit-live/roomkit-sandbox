@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Bumped RTK 0.34.2 → 0.42.4** in the sandbox image (both arches);
+  per-arch checksums updated accordingly.
+
 ## [0.2.4] — 2026-05-28
 
 ### Added

@@ -9,8 +9,8 @@ RUN apk add --no-cache \
     python3 \
     github-cli
 
-ARG RTK_VERSION=0.34.2
-ARG RTK_SHA256_AMD64=419b38216c8b1249cc72386d4bbcfe9e7808bde0af63159c826438da534f9e59
+ARG RTK_VERSION=0.42.4
+ARG RTK_SHA256_AMD64=34975116da11e09e502501daf758143e0b22ed3a42a10eb67fb693a6270d9e36
 RUN curl -fsSL "https://github.com/rtk-ai/rtk/releases/download/v${RTK_VERSION}/rtk-x86_64-unknown-linux-musl.tar.gz" \
     -o /tmp/rtk.tar.gz \
     && echo "${RTK_SHA256_AMD64}  /tmp/rtk.tar.gz" | sha256sum -c - \
@@ -43,8 +43,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get purge -y --auto-remove gnupg \
     && rm -rf /var/lib/apt/lists/*
 
-ARG RTK_VERSION=0.34.2
-ARG RTK_SHA256_ARM64=fc168635cf65715dae5cb4f11cd76044b4c824702d50c328070b78ab31fb6c51
+ARG RTK_VERSION=0.42.4
+ARG RTK_SHA256_ARM64=cc2b91c064eb670c097c184913c8fbcb1a943d53d7fe505375e96ba0c5b6459f
 RUN curl -fsSL "https://github.com/rtk-ai/rtk/releases/download/v${RTK_VERSION}/rtk-aarch64-unknown-linux-gnu.tar.gz" \
     -o /tmp/rtk.tar.gz \
     && echo "${RTK_SHA256_ARM64}  /tmp/rtk.tar.gz" | sha256sum -c - \
