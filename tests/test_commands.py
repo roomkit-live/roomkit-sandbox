@@ -63,11 +63,13 @@ def test_build_diff():
     assert cmd == ["rtk", "diff", "a.py", "b.py"]
 
 
-def test_build_bash():
-    # `rtk err` surfaces real errors/warnings on failure (rtk summary could
-    # hide a failure behind a bare error count).
-    cmd = build_rtk_command("bash", {"command": "make test"})
-    assert cmd == ["rtk", "err", "make test"]
+def test_build_bash_returns_stdout():
+    # Bash runs plainly so its stdout reaches the agent — the executor splits
+    # stdout/stderr/exit-code, so failures still surface. The old `rtk err`
+    # wrapper dropped stdout on success, which broke read commands (ls/cat)
+    # and made agents loop chasing output that never came.
+    cmd = build_rtk_command("bash", {"command": "ls /workspace && cat README.md"})
+    assert cmd == ["sh", "-c", "ls /workspace && cat README.md"]
 
 
 def test_build_write():

@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-07-03
+
+### Fixed
+
+- **`sandbox_bash` now returns the command's real stdout.** The default
+  `RtkCommandBuilder.build_bash` wrapped every command in `rtk err`, which on
+  success printed only a `[ok]` line and dropped stdout. For read commands
+  (`ls`, `cat`, `find`, `git log`) stdout *is* the payload, so agents got
+  nothing back and looped re-running variations to coax out output that never
+  came (observed: a repo review that ran `ls` dozens of times). Bash now runs
+  the command plainly (`sh -c`); the executor already splits
+  stdout/stderr/exit-code, so failures still surface their message. The
+  structured tools (`sandbox_read`/`ls`/`grep`/`git`) keep their RTK
+  token-optimization — only the general-purpose bash terminal changed.
+
 ## [0.3.0] — 2026-06-25
 
 ### Added

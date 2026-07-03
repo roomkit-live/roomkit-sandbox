@@ -133,13 +133,18 @@ class RtkCommandBuilder(CommandBuilder):
         return ["rtk", "diff", args.get("file_a", ""), args.get("file_b", "")]
 
     def build_bash(self, args: dict[str, Any]) -> list[str]:
-        # `rtk err` runs the command and surfaces its errors/warnings verbatim,
-        # so a failing command reaches the agent with the real message it needs
-        # to self-correct. (`rtk summary` could collapse a failure to a bare
-        # "[error] N errors" count, hiding the cause.) On success it reports a
-        # short "[ok]" line; a command whose stdout matters should redirect to a
-        # file and read it back with sandbox_read.
-        return ["rtk", "err", args.get("command", "")]
+        # Run the command plainly so its stdout reaches the agent. The executor
+        # already captures stdout→output, stderr→error and the exit code
+        # separately, so a failure still surfaces its message and a success
+        # returns its real output. The previous `rtk err` wrapper printed only
+        # "[ok]" on success and DROPPED stdout — for read commands (`ls`, `cat`,
+        # `find`, `git log`) that is the entire payload, so the agent got
+        # nothing back and looped re-running variations to coax out output that
+        # never came. The structured tools (`sandbox_read`/`ls`/`grep`) keep
+        # their rtk token-optimization; bash is the general terminal and must
+        # behave like one. Oversized output is bounded by the caller's
+        # tool-result eviction, not by silently dropping it here.
+        return ["sh", "-c", args.get("command", "")]
 
 
 class NativeCommandBuilder(CommandBuilder):
