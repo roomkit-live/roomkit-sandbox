@@ -14,12 +14,12 @@ import logging
 import threading
 from typing import Any
 
-from roomkit_sandbox._shared import DEFAULT_IMAGE, ExecResult
+from roomkit_sandbox._shared import DEFAULT_IMAGE, ContainerInfo, ExecResult
 
 logger = logging.getLogger("roomkit_sandbox.docker_backend")
 
 # Re-export for backward compatibility
-__all__ = ["DockerSandboxBackend", "ExecResult", "DEFAULT_IMAGE"]
+__all__ = ["DockerSandboxBackend", "ContainerInfo", "ExecResult", "DEFAULT_IMAGE"]
 
 DEFAULT_MEMORY_LIMIT = "1g"
 DEFAULT_CPU_COUNT = 1
@@ -154,6 +154,30 @@ class DockerSandboxBackend:
             if c.status == "running":
                 return c.id
         return None
+
+    async def list_containers(self, labels: dict[str, str] | None = None) -> list[ContainerInfo]:
+        """Every sandbox container this backend manages, narrowed by ``labels``.
+
+        Stopped containers are included: an inventory that hides them could
+        not delete them. ``labels`` is an exact-match AND filter on top of the
+        ``roomkit.sandbox=true`` marker every container of this backend carries.
+        """
+        client = self._get_client()
+        selectors = ["roomkit.sandbox=true"]
+        selectors += [f"{key}={value}" for key, value in (labels or {}).items()]
+        containers = await asyncio.to_thread(
+            client.containers.list, all=True, filters={"label": selectors}
+        )
+        return [
+            ContainerInfo(
+                container_id=c.id,
+                session_id=(c.labels or {}).get("roomkit.sandbox.session_id"),
+                labels=dict(c.labels or {}),
+                status=str(c.status or "unknown").lower(),
+                created_at=(c.attrs or {}).get("Created"),
+            )
+            for c in containers
+        ]
 
     async def delete_container(self, container_id: str) -> None:
         """Stop and remove a container."""

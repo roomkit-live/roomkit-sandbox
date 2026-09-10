@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`list_containers(labels)` on every backend** (Docker, Kubernetes, smolBSD)
+  and on `ContainerBackendProtocol`, returning `ContainerInfo` rows
+  (`container_id`, `session_id`, `labels`, `status`, `created_at`). The
+  executor never needed an inventory, but the integrator that has to show a
+  member's containers or tear down a whole tenant's did, and until now had to
+  reach for the raw Docker/Kubernetes client with the backend's own labels.
+  The filter is an exact-match AND on top of the backend's marker
+  (`roomkit.sandbox=true` / `managed-by=roomkit-sandbox`); stopped and
+  pending containers are included so they can be deleted.
+
 ## [0.3.1] — 2026-07-03
 
 ### Fixed

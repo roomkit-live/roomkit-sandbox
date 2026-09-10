@@ -15,7 +15,7 @@ import shlex
 import time
 from typing import Any
 
-from roomkit_sandbox._shared import DEFAULT_IMAGE, ExecResult
+from roomkit_sandbox._shared import DEFAULT_IMAGE, ContainerInfo, ExecResult
 
 logger = logging.getLogger("roomkit_sandbox.k8s")
 
@@ -331,6 +331,38 @@ class KubernetesSandboxBackend:
         except Exception as e:
             logger.error("Error finding pod by session %s: %s", session_id, e)
         return None
+
+    async def list_containers(self, labels: dict[str, str] | None = None) -> list[ContainerInfo]:
+        """Every sandbox pod this backend manages, narrowed by ``labels``.
+
+        Keys and values go through the same sanitizer ``create_container``
+        applied, so a filter spelled like the labels handed in at creation
+        matches the pod. Every phase is reported: a ``Pending`` or ``Failed``
+        pod is still one to show and to delete.
+        """
+        self._init_client()
+        selectors = ["managed-by=roomkit-sandbox"]
+        selectors += [f"{_k8s_label(k)}={_k8s_label_value(v)}" for k, v in (labels or {}).items()]
+        pods = await asyncio.to_thread(
+            self._core_api.list_namespaced_pod,
+            namespace=self._namespace,
+            label_selector=",".join(selectors),
+        )
+        infos: list[ContainerInfo] = []
+        for pod in pods.items:
+            meta = pod.metadata
+            pod_labels = dict(getattr(meta, "labels", None) or {})
+            created = getattr(meta, "creation_timestamp", None)
+            infos.append(
+                ContainerInfo(
+                    container_id=meta.name,
+                    session_id=pod_labels.get("session"),
+                    labels=pod_labels,
+                    status=str((pod.status.phase if pod.status else None) or "unknown").lower(),
+                    created_at=created.isoformat() if created is not None else None,
+                )
+            )
+        return infos
 
     async def delete_container(self, container_id: str) -> None:
         """Delete a sandbox pod."""

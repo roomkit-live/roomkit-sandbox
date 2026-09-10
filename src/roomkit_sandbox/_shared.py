@@ -19,3 +19,21 @@ class ExecResult:
     exit_code: int
     stdout: str
     stderr: str
+
+
+@dataclass
+class ContainerInfo:
+    """One container a backend manages, as ``list_containers`` reports it.
+
+    ``container_id`` is what the other backend verbs take (a Docker id, a pod
+    name); ``session_id`` is the executor's reuse key when the backend recorded
+    it; ``labels`` are the backend's own markers merged with the caller's;
+    ``status`` is the backend's lifecycle word, lower-cased (``running``,
+    ``exited``, ``pending``…); ``created_at`` is ISO-8601 when known.
+    """
+
+    container_id: str
+    session_id: str | None
+    labels: dict[str, str]
+    status: str
+    created_at: str | None = None

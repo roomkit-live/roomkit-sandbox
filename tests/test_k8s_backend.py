@@ -19,7 +19,7 @@ def test_safe_pod_name():
 
 
 def test_k8s_label():
-    assert _k8s_label("luge.tenant_id") == "luge.tenant_id"
+    assert _k8s_label("app.tenant_id") == "app.tenant_id"
     assert _k8s_label("simple") == "simple"
     assert _k8s_label("key with spaces") == "key-with-spaces"
     assert len(_k8s_label("a" * 100)) <= 63
@@ -145,7 +145,7 @@ async def test_create_container(backend):
 
 @pytest.mark.asyncio
 async def test_create_container_with_labels(backend):
-    pod_name = await backend.create_container("sess1", labels={"luge.type": "sandbox"})
+    pod_name = await backend.create_container("sess1", labels={"app.type": "sandbox"})
     assert pod_name.startswith("sandbox-")
 
 
@@ -189,3 +189,36 @@ async def test_delete_container(backend):
     await backend.create_container("delete-test")
     await backend.delete_container("sandbox-delete-test")
     assert "sandbox-delete-test" in backend._core_api.deleted_pods
+
+
+@pytest.mark.asyncio
+async def test_list_containers_reports_every_managed_pod(backend):
+    """The inventory verb: every pod, its labels, its phase, lower-cased."""
+    await backend.create_container("inv-a", labels={"app.tenant_id": "t1"})
+    await backend.create_container("inv-b", labels={"app.tenant_id": "t2"})
+
+    infos = await backend.list_containers({"app.tenant_id": "t1"})
+
+    # The mock ignores the selector, so the assertion is on the projection.
+    names = {info.container_id for info in infos}
+    assert {"sandbox-inv-a", "sandbox-inv-b"} <= names
+    assert all(info.status == "running" for info in infos)
+    assert all(info.session_id is None or isinstance(info.session_id, str) for info in infos)
+
+
+def test_list_containers_builds_a_sanitized_selector(monkeypatch):
+    """Filter keys and values go through the label sanitizer create used."""
+    recorded = {}
+
+    class _Api:
+        def list_namespaced_pod(self, namespace, label_selector=""):
+            recorded["selector"] = label_selector
+            return MockPodList([])
+
+    backend = KubernetesSandboxBackend(namespace="ns")
+    backend._core_api = _Api()
+    backend._stream = MockStream()
+    import asyncio
+
+    asyncio.run(backend.list_containers({"app.user_id": "user:1"}))
+    assert recorded["selector"] == "managed-by=roomkit-sandbox,app.user_id=user-1"

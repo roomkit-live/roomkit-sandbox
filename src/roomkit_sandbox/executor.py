@@ -30,7 +30,7 @@ from typing import Any, Protocol, runtime_checkable
 from roomkit.sandbox import SandboxExecutor, SandboxResult
 from roomkit.sandbox.tools import SANDBOX_TOOL_SCHEMAS
 
-from roomkit_sandbox._shared import DEFAULT_IMAGE, ExecResult
+from roomkit_sandbox._shared import DEFAULT_IMAGE, ContainerInfo, ExecResult
 from roomkit_sandbox.commands import CommandBuilder, RtkCommandBuilder
 
 logger = logging.getLogger("roomkit_sandbox")
@@ -42,6 +42,11 @@ class ContainerBackendProtocol(Protocol):
 
     ``exec_command`` must return an object with ``exit_code: int``,
     ``stdout: str``, and ``stderr: str`` attributes.
+
+    ``list_containers`` is the inventory verb: every container this backend
+    manages, narrowed by an exact-match label filter. The executor itself
+    never calls it — it is for the integrator that has to show or tear down
+    what the executor created (a member's containers, a whole tenant's).
     """
 
     async def create_container(
@@ -65,6 +70,8 @@ class ContainerBackendProtocol(Protocol):
     async def find_container(self, session_id: str) -> str | None: ...
 
     async def delete_container(self, container_id: str) -> None: ...
+
+    async def list_containers(self, labels: dict[str, str] | None = ...) -> list[ContainerInfo]: ...
 
 
 class ContainerSandboxExecutor(SandboxExecutor):

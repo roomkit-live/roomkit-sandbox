@@ -34,7 +34,7 @@ import logging
 import re
 import shlex
 
-from roomkit_sandbox._shared import ExecResult
+from roomkit_sandbox._shared import ContainerInfo, ExecResult
 
 logger = logging.getLogger("roomkit_sandbox.smolbsd")
 
@@ -142,6 +142,7 @@ class SmolBSDSandboxBackend:
         self._vms[vm_name] = {
             "session_id": session_id,
             "port": ssh_port,
+            "labels": dict(labels or {}),
         }
         logger.info("Created smolBSD VM %s (port=%d, service=%s)", vm_name, ssh_port, self._service)
 
@@ -258,6 +259,24 @@ class SmolBSDSandboxBackend:
         if vm_name in self._vms and await self.container_exists(vm_name):
             return vm_name
         return None
+
+    async def list_containers(self, labels: dict[str, str] | None = None) -> list[ContainerInfo]:
+        """Every VM this backend booted, narrowed by the labels it was given."""
+        infos: list[ContainerInfo] = []
+        for vm_name, info in list(self._vms.items()):
+            vm_labels: dict[str, str] = dict(info.get("labels") or {})
+            if labels and any(vm_labels.get(k) != v for k, v in labels.items()):
+                continue
+            running = await self.container_exists(vm_name)
+            infos.append(
+                ContainerInfo(
+                    container_id=vm_name,
+                    session_id=info.get("session_id"),
+                    labels=vm_labels,
+                    status="running" if running else "stopped",
+                )
+            )
+        return infos
 
     async def delete_container(self, container_id: str) -> None:
         """Kill the QEMU process for a VM."""
