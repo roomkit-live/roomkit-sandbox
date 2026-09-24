@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`ContainerSandboxExecutor.execute(..., env=)`**: environment variables set
+  for one command only, passed through to the backend's `exec_command`. The
+  constructor's `env` is read once, when the container is created, and a
+  container found again by its session label keeps what it was created with;
+  a value that changes over the container's life (a credential rotated or
+  revoked) had no way to reach it. `env` is keyword-only, so the
+  `SandboxExecutor.execute(command, arguments)` contract is unchanged. On
+  Kubernetes the values travel in the exec request (the backend prefixes the
+  command with `export K='v'`), so they reach the API server's request log
+  when audit logging records exec, and the command line of the wrapping shell
+  inside the container; Docker passes them in the exec body.
+
 - **`list_containers(labels)` on every backend** (Docker, Kubernetes, smolBSD)
   and on `ContainerBackendProtocol`, returning `ContainerInfo` rows
   (`container_id`, `session_id`, `labels`, `status`, `created_at`). The

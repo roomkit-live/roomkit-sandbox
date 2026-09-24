@@ -90,7 +90,9 @@ class ContainerSandboxExecutor(SandboxExecutor):
         setup_commands: Shell commands to run on first container creation
             (e.g. ``["git clone ... /workspace/repo"]``).
         labels: Extra labels for container creation.
-        env: Extra environment variables for container creation.
+        env: Extra environment variables for container creation. Read once,
+            when the container is created; per-command values go to
+            :meth:`execute`'s ``env``.
     """
 
     def __init__(
@@ -169,8 +171,18 @@ class ContainerSandboxExecutor(SandboxExecutor):
         self,
         command: str,
         arguments: dict[str, Any] | None = None,
+        *,
+        env: dict[str, str] | None = None,
     ) -> SandboxResult:
-        """Run a sandbox command in the container."""
+        """Run a sandbox command in the container.
+
+        ``env`` is set for this command only, on top of the container's own
+        environment. It is how a value that changes over the container's
+        life (a credential rotated or revoked) reaches the command: ``env``
+        at construction is only read when the container is created, and a
+        container found again by its session label keeps what it was
+        created with.
+        """
         container_id = await self._ensure_container()
         args = arguments or {}
         cmd = self._command_builder.build(command, args)
@@ -185,6 +197,7 @@ class ContainerSandboxExecutor(SandboxExecutor):
                 container_id,
                 cmd,
                 workdir=self._workdir,
+                env=env,
                 timeout=timeout,
             )
             return SandboxResult(

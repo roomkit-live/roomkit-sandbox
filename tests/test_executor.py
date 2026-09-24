@@ -27,6 +27,7 @@ class MockBackend:
     async def exec_command(self, container_id, cmd, workdir="/workspace", env=None, timeout=30):
         self.executed.append((container_id, cmd))
         self.last_timeout = timeout
+        self.last_env = env
         return self._next_result
 
     async def container_exists(self, container_id):
@@ -137,3 +138,17 @@ async def test_close_releases_reference(executor, backend):
     assert executor._container_id is not None
     await executor.close()
     assert executor._container_id is None
+
+
+@pytest.mark.asyncio
+async def test_per_call_env_reaches_a_reused_container(backend):
+    """A value set after the container exists still reaches the command."""
+    executor = ContainerSandboxExecutor(
+        backend=backend, session_id="env-test", env={"TOKEN": "at-creation"}
+    )
+    await executor.execute("ls", {})
+    assert backend.last_env is None
+
+    await executor.execute("bash", {"command": "gh auth status"}, env={"TOKEN": "rotated"})
+    assert len(backend.created) == 1
+    assert backend.last_env == {"TOKEN": "rotated"}
