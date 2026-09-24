@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-09-24
+
 ### Added
 
 - **`ContainerSandboxExecutor.execute(..., env=)`**: environment variables set
@@ -232,7 +234,9 @@ Alpine 3.21 + RTK 0.34.2 + git + bash + curl + jq — **37 MB**.
 - `roomkit >= 0.7.0a8` (with `SandboxExecutor` ABC)
 - `docker >= 7.0` (optional, for standalone use)
 
-[Unreleased]: https://github.com/roomkit-live/roomkit-sandbox/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/roomkit-live/roomkit-sandbox/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/roomkit-live/roomkit-sandbox/compare/v0.3.1...v0.4.0
+[0.3.1]: https://github.com/roomkit-live/roomkit-sandbox/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/roomkit-live/roomkit-sandbox/compare/v0.2.4...v0.3.0
 [0.2.4]: https://github.com/roomkit-live/roomkit-sandbox/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/roomkit-live/roomkit-sandbox/compare/v0.2.2...v0.2.3
