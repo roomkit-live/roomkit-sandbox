@@ -9,6 +9,7 @@ Requires the ``kubernetes`` Python SDK::
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import re
 import shlex
@@ -20,6 +21,42 @@ from roomkit_sandbox._shared import DEFAULT_IMAGE, ContainerInfo, ExecResult
 logger = logging.getLogger("roomkit_sandbox.k8s")
 
 _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _env_payload(env: dict[str, str]) -> str:
+    """``env`` as the one stdin line :func:`_wrap_command` reads: shell
+    ``export`` statements, base64-encoded so the line holds no newline."""
+    lines = []
+    for key, value in env.items():
+        if not _ENV_KEY_RE.match(key):
+            raise ValueError(f"Invalid environment variable name: {key!r}")
+        lines.append(f"export {key}={shlex.quote(value)}")
+    return base64.b64encode("\n".join(lines).encode()).decode() + "\n"
+
+
+def _wrap_command(cmd: list[str], workdir: str, *, reads_env: bool) -> list[str]:
+    """The exec argv: ``cd`` into ``workdir``, first exporting the env line
+    read from stdin when ``reads_env``. The command itself is ``exec``-ed
+    with stdin from ``/dev/null`` so a reader of stdin sees EOF, as it does
+    when the exec has no stdin at all."""
+    if not workdir and not reads_env:
+        return cmd
+    parts = []
+    if reads_env:
+        parts.append(
+            'IFS= read -r __rks_env && eval "$(printf %s "$__rks_env" | base64 -d)"'
+            " && unset __rks_env"
+        )
+    if workdir:
+        parts.append(f"cd {shlex.quote(workdir)}")
+    if len(cmd) == 3 and cmd[0] == "sh" and cmd[1] == "-c":
+        run = f"exec sh -c {shlex.quote(cmd[2])}"
+    else:
+        run = f"exec {shlex.join(cmd)}"
+    if reads_env:
+        run += " </dev/null"
+    parts.append(run)
+    return ["sh", "-c", " && ".join(parts)]
 
 
 def _safe_pod_name(session_id: str) -> str:
@@ -242,27 +279,18 @@ class KubernetesSandboxBackend:
         env: dict[str, str] | None = None,
         timeout: int = 30,
     ) -> ExecResult:
-        """Execute a command in a sandbox pod."""
+        """Execute a command in a sandbox pod.
+
+        ``env`` never appears in the exec request: the request only carries a
+        fixed wrapper, and the values are written to the exec's stdin as one
+        base64 line that the wrapper reads, exports, then runs the command with
+        stdin from ``/dev/null``. A value in the command would reach the API
+        server's request log and the wrapping shell's command line (``ps``).
+        """
         self._init_client()
 
-        # Build exec command with workdir/env prefix
-        exec_cmd = cmd
-        if workdir or env:
-            prefix_parts = []
-            if env:
-                for key, value in env.items():
-                    if not _ENV_KEY_RE.match(key):
-                        raise ValueError(f"Invalid environment variable name: {key!r}")
-                    safe_value = value.replace("'", "'\\''")
-                    prefix_parts.append(f"export {key}='{safe_value}'")
-            if workdir:
-                prefix_parts.append(f"cd {shlex.quote(workdir)}")
-            prefix = " && ".join(prefix_parts)
-
-            if len(cmd) == 3 and cmd[0] == "sh" and cmd[1] == "-c":
-                exec_cmd = ["sh", "-c", f"{prefix} && {cmd[2]}"]
-            else:
-                exec_cmd = ["sh", "-c", f"{prefix} && {shlex.join(cmd)}"]
+        payload = _env_payload(env) if env else None
+        exec_cmd = _wrap_command(cmd, workdir, reads_env=payload is not None)
 
         def _exec_blocking() -> ExecResult:
             resp = self._stream.stream(
@@ -272,11 +300,13 @@ class KubernetesSandboxBackend:
                 command=exec_cmd,
                 container="sandbox",
                 stderr=True,
-                stdin=False,
+                stdin=payload is not None,
                 stdout=True,
                 tty=False,
                 _preload_content=False,
             )
+            if payload is not None:
+                resp.write_stdin(payload)
             stdout = ""
             stderr = ""
             while resp.is_open():

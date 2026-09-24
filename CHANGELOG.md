@@ -15,11 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   container found again by its session label keeps what it was created with;
   a value that changes over the container's life (a credential rotated or
   revoked) had no way to reach it. `env` is keyword-only, so the
-  `SandboxExecutor.execute(command, arguments)` contract is unchanged. On
-  Kubernetes the values travel in the exec request (the backend prefixes the
-  command with `export K='v'`), so they reach the API server's request log
-  when audit logging records exec, and the command line of the wrapping shell
-  inside the container; Docker passes them in the exec body.
+  `SandboxExecutor.execute(command, arguments)` contract is unchanged.
 
 - **`list_containers(labels)` on every backend** (Docker, Kubernetes, smolBSD)
   and on `ContainerBackendProtocol`, returning `ContainerInfo` rows
@@ -30,6 +26,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The filter is an exact-match AND on top of the backend's marker
   (`roomkit.sandbox=true` / `managed-by=roomkit-sandbox`); stopped and
   pending containers are included so they can be deleted.
+
+### Changed
+
+- **Kubernetes: `exec_command(env=)` sends the values over the exec's stdin.**
+  They used to be spelled into the command as `export K='v' && …`, which puts
+  them in the exec request (the API server's request log when audit logging
+  records exec) and on the wrapping shell's command line (`ps`). The request
+  now carries a fixed wrapper that reads one base64 line from stdin, exports
+  it, and `exec`s the command with stdin from `/dev/null`. Commands also run
+  through `exec` when no env is given.
 
 ## [0.3.1] — 2026-07-03
 

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import base64
+import shlex
+
 import pytest
 
 from roomkit_sandbox.k8s_backend import (
@@ -94,6 +97,10 @@ class MockStreamResp:
         self._stderr = stderr
         self.returncode = exit_code
         self._open = True
+        self.stdin_written: list[str] = []
+
+    def write_stdin(self, data):
+        self.stdin_written.append(data)
 
     def is_open(self):
         was_open = self._open
@@ -123,8 +130,10 @@ class MockStreamResp:
 class MockStream:
     def __init__(self, result=None):
         self._result = result or MockStreamResp()
+        self.kwargs: dict = {}
 
     def stream(self, *args, **kwargs):
+        self.kwargs = kwargs
         return self._result
 
 
@@ -154,6 +163,41 @@ async def test_exec_command(backend):
     result = await backend.exec_command("sandbox-test", ["rtk", "ls"])
     assert result.exit_code == 0
     assert result.stdout == "hello\n"
+
+
+@pytest.mark.asyncio
+async def test_exec_command_without_env_opens_no_stdin(backend):
+    await backend.exec_command("sandbox-test", ["rtk", "ls"])
+    assert backend._stream.kwargs["stdin"] is False
+    assert backend._stream._result.stdin_written == []
+    assert backend._stream.kwargs["command"] == ["sh", "-c", "cd /workspace && exec rtk ls"]
+
+
+@pytest.mark.asyncio
+async def test_exec_command_env_travels_on_stdin_not_in_the_request(backend):
+    """The exec request (logged by the API server, visible in ``ps``) carries
+    only the wrapper; the values go through stdin."""
+    secret = "tok'en $HOME"
+    await backend.exec_command(
+        "sandbox-test", ["sh", "-c", "gh auth status"], env={"TOKEN": secret, "EMPTY": ""}
+    )
+
+    command = " ".join(backend._stream.kwargs["command"])
+    assert "tok" not in command
+    assert backend._stream.kwargs["stdin"] is True
+    (line,) = backend._stream._result.stdin_written
+    assert line.endswith("\n") and "\n" not in line[:-1]
+    assert base64.b64decode(line).decode().splitlines() == [
+        f"export TOKEN={shlex.quote(secret)}",
+        "export EMPTY=''",
+    ]
+    assert command.endswith("exec sh -c 'gh auth status' </dev/null")
+
+
+@pytest.mark.asyncio
+async def test_exec_command_refuses_an_invalid_env_name(backend):
+    with pytest.raises(ValueError):
+        await backend.exec_command("sandbox-test", ["ls"], env={"BAD-NAME": "x"})
 
 
 @pytest.mark.asyncio
