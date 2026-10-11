@@ -39,8 +39,8 @@ Three backends for different deployment profiles:
 | | Docker | Kubernetes | SmolBSD |
 |--|--------|------------|---------|
 | **Isolation** | Container | Pod | VM |
-| **Boot** | ~500ms | ~2-5s | ~5s (SSH) |
-| **Image** | 37MB (Alpine + RTK) | 37MB | 512MB (NetBSD) |
+| **Boot** | ~500ms | ~2-5s | ~0.5s |
+| **Image** | 37MB (Alpine + RTK) | 37MB | 1GB (NetBSD + git, curl, bash) |
 | **Commands** | RTK (token-optimized) | RTK | Native (POSIX) |
 | **Use case** | Dev, CI | Production | Local assistant |
 
@@ -77,17 +77,19 @@ sandbox = ContainerSandboxExecutor(
 )
 ```
 
-### SmolBSD (Experimental)
+### SmolBSD
 
 ```python
 from roomkit_sandbox import ContainerSandboxExecutor, NativeCommandBuilder
 from roomkit_sandbox.smolbsd_backend import SmolBSDSandboxBackend
 
 sandbox = ContainerSandboxExecutor(
-    backend=SmolBSDSandboxBackend(smolbsd_dir="/path/to/smolBSD", service="sshd"),
+    backend=SmolBSDSandboxBackend(smolbsd_dir="/path/to/smolBSD"),
     command_builder=NativeCommandBuilder(),
 )
 ```
+
+The guest image is built from `smolbsd/` (see [docs/backends.md](docs/backends.md#smolbsd-backend)).
 
 ## Command Builders
 
@@ -120,7 +122,7 @@ Agent (any provider) ──tool call──> RoomKit AIChannel
                     │                   │                   │
               DockerBackend      K8sBackend        SmolBSDBackend
                     │                   │                   │
-              Container (37MB)     Pod (37MB)         VM (512MB)
+              Container (37MB)     Pod (37MB)         VM (1GB)
                     │                   │                   │
               RtkCommandBuilder  RtkCommandBuilder  NativeCommandBuilder
                     │                   │                   │

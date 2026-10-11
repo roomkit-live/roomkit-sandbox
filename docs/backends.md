@@ -72,7 +72,7 @@ sandbox = ContainerSandboxExecutor(backend=backend)
 
 ---
 
-## SmolBSD Backend (Experimental)
+## SmolBSD Backend
 
 **Best for:** Local AI assistants requiring VM-level isolation.
 
@@ -80,10 +80,7 @@ sandbox = ContainerSandboxExecutor(backend=backend)
 from roomkit_sandbox import ContainerSandboxExecutor, NativeCommandBuilder
 from roomkit_sandbox.smolbsd_backend import SmolBSDSandboxBackend
 
-backend = SmolBSDSandboxBackend(
-    smolbsd_dir="/path/to/smolBSD",
-    service="sshd",
-)
+backend = SmolBSDSandboxBackend(smolbsd_dir="/path/to/smolBSD")
 sandbox = ContainerSandboxExecutor(
     backend=backend,
     command_builder=NativeCommandBuilder(),  # No RTK on NetBSD
@@ -91,9 +88,10 @@ sandbox = ContainerSandboxExecutor(
 ```
 
 **Requirements:**
-- smolBSD installed ([github.com/NetBSDfr/smolBSD](https://github.com/NetBSDfr/smolBSD))
-- QEMU with KVM support
-- sshd service image built (see setup below)
+- Linux with KVM (`/dev/kvm` readable and writable by the roomkit user), QEMU and `socat`
+- A smolBSD checkout ([github.com/NetBSDfr/smolBSD](https://github.com/NetBSDfr/smolBSD)),
+  tested at `3c5fd41` (2026-10-07), at a path of 63 characters at most (unix socket limit)
+- The `roomkit-sandbox` guest image built into it (see setup below)
 
 **Setup:**
 
@@ -101,30 +99,47 @@ sandbox = ContainerSandboxExecutor(
 # 1. Install prerequisites
 sudo apt install curl git bmake qemu-system-x86_64 binutils libarchive-tools gdisk socat jq lsof
 
-# 2. Clone smolBSD
-git clone https://github.com/NetBSDfr/smolBSD.git
-cd smolBSD
+# 2. Clone smolBSD and fetch its prebuilt builder image (no root needed)
+git clone https://github.com/NetBSDfr/smolBSD.git ~/smolBSD
+(cd ~/smolBSD && bmake fetchimg)
 
-# 3. Fetch builder image
-bmake fetchimg
-
-# 4. Add your SSH key for the sshd service
-cp ~/.ssh/id_ed25519.pub service/sshd/etc/
-
-# 5. Build the sshd service image
-bmake SERVICE=sshd build
+# 3. Build the guest image, from this repository
+smolbsd/build.sh ~/smolBSD NOSUDO=1
+# -> ~/smolBSD/images/roomkit-sandbox-amd64:latest.img (NetBSD + git, curl, bash, jq)
 ```
 
-**Current limitations:**
-- SSH-based exec (~5s first boot, ~50ms subsequent commands)
-- No git, curl, or bash in default sshd image (only POSIX core tools)
-- VirtIO socket exec planned (would reduce to ~100ms boot)
+**How it works:**
+- One microVM per session, booted from the shared image in snapshot mode: the
+  image never changes. The first command of a session waits ~0.5 s for the boot.
+- Commands reach the VM over a VirtIO console socket, served by the image's
+  runner (`smolbsd/runner.sh`): no SSH, no port on the host, ~10 ms per command.
+- Each session has a workspace disk mounted on `/workspace` (sparse file,
+  `workspace_gb`, 8 GiB by default). If the VM dies, the next command boots a
+  new one on the same disk; `delete_container` removes it.
+- VMs run detached: they survive a roomkit restart and `find_container` picks
+  them up again. Their state lives under `state_dir`
+  (default `~/.local/state/roomkit-sandbox/smolbsd`).
+- Outbound network is on by default (QEMU user-mode NAT, nothing reachable from
+  outside); `network=False` turns it off.
+- The environment given at creation reaches every command; `execute(env=...)`
+  adds values for one command.
+- Timeouts are enforced inside the VM: the command's process tree is killed and
+  the exit code is 124. A VM whose runner stops answering is stopped.
+
+**Options:** `memory` (MB, 512), `cpus` (1), `network` (True), `workspace_gb` (8),
+`state_dir`, `boot_timeout` (30 s), `extra_env`, `service` and `image_tag` (the
+image file, `images/<service>-<arch>:<tag>.img`).
 
 **Characteristics:**
 - True VM isolation (separate kernel, hypervisor escape required)
-- ~70ms kernel boot (5s with SSH wait)
 - Native Unix commands (no RTK)
-- Ideal for untrusted code execution
+- Ideal for untrusted code execution on a local machine
+
+**Tests against real VMs:**
+
+```bash
+SMOLBSD_DIR=~/smolBSD uv run pytest tests/test_smolbsd_e2e.py
+```
 
 ---
 
@@ -133,9 +148,9 @@ bmake SERVICE=sshd build
 | | Docker | Kubernetes | SmolBSD |
 |--|--------|------------|---------|
 | **Isolation** | Container | Pod | VM |
-| **First boot** | ~500ms | ~2-5s | ~5s (SSH) |
+| **First boot** | ~500ms | ~2-5s | ~0.5s |
 | **Reuse** | Instant | Instant | Instant |
-| **Image size** | 37MB | 37MB | 512MB |
+| **Image size** | 37MB | 37MB | 1GB |
 | **Commands** | RTK | RTK | Native |
 | **Production** | Dev/CI | Yes | Local |
 | **Install** | `[docker]` | `[kubernetes]` | Manual |

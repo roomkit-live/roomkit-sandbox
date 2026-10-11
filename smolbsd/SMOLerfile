@@ -1,0 +1,21 @@
+# roomkit-sandbox guest image for SmolBSDSandboxBackend.
+#
+# The roomkit Agent's commands run in this NetBSD microVM; the backend
+# drives it through runner.sh over a VirtIO console port, and
+# workspace.sh mounts the VM's own workspace disk on /workspace. Build it
+# with smolbsd/build.sh, which places those scripts, rc.pre and rc.local
+# in the service directory before handing this file to smoler.sh.
+
+FROM base,etc
+
+LABEL smolbsd.service=roomkit-sandbox
+LABEL smolbsd.imgsize=1024
+
+RUN pkgin up && pkgin -y in git-base bash jq
+
+# git-base ships without templates; git warns on every init/clone
+RUN mkdir -p /workspace /var/roomkit /usr/pkg/share/git-core/templates
+
+# no runner without a workspace: the VM then halts and the backend
+# reports the console log
+CMD /bin/sh /etc/roomkit-workspace && /bin/sh /etc/roomkit-runner

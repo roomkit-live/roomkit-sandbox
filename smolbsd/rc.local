@@ -1,0 +1,10 @@
+# Sourced by smolBSD's basicrc last, once networking and resolv.conf
+# are set up.
+
+if ifconfig vioif0 >/dev/null 2>&1; then
+	# QEMU's DNS relay lets the first A+AAAA query pair of a boot time
+	# out (5 s); a lone lookup first avoids it, and a 1 s resolver
+	# timeout bounds the cost should a command beat the warm-up.
+	echo 'options timeout:1' >>/etc/resolv.conf
+	getent hosts example.org >/dev/null 2>&1 &
+fi

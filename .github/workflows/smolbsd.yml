@@ -1,0 +1,48 @@
+name: smolBSD
+
+# Builds the roomkit-sandbox guest image and runs the backend's tests on
+# real VMs. Manual for now: switch to path-filtered pushes once it has
+# run green on GitHub's runners.
+on:
+  workflow_dispatch:
+
+env:
+  UV_NO_SOURCES: "true"
+  # the smolBSD commit the backend is tested against (startnb.sh internals)
+  SMOLBSD_REF: 3c5fd417b8764b4842e5df3c555cc372c84b30b7
+
+jobs:
+  image-and-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Give the runner user KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Install smolBSD prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl git bmake qemu-system-x86 binutils \
+            libarchive-tools gdisk socat jq lsof
+
+      - name: Fetch smolBSD
+        run: |
+          git clone https://github.com/NetBSDfr/smolBSD.git "$RUNNER_TEMP/smolBSD"
+          git -C "$RUNNER_TEMP/smolBSD" checkout "$SMOLBSD_REF"
+          (cd "$RUNNER_TEMP/smolBSD" && bmake fetchimg)
+
+      - name: Build the roomkit-sandbox image
+        run: smolbsd/build.sh "$RUNNER_TEMP/smolBSD" NOSUDO=1
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+      - run: uv sync --dev
+
+      - name: Tests on real VMs
+        run: SMOLBSD_DIR="$RUNNER_TEMP/smolBSD" uv run pytest tests/test_smolbsd_e2e.py -v

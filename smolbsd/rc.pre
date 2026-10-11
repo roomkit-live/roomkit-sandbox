@@ -1,0 +1,7 @@
+# Sourced by smolBSD's basicrc before it sets up networking.
+
+# No duplicate address detection on QEMU's fixed user-network address:
+# while it runs the address stays tentative and the first DNS lookups
+# time out, ~15-20 s lost on the Agent's first network command.
+sysctl -qw net.inet.ip.dad_count=0
+sysctl -qw net.inet6.ip6.dad_count=0

@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **smolBSD backend: out of experimental.** `SmolBSDSandboxBackend` keeps its
+  name and import path, but runs its VMs differently:
+  - Commands go over a VirtIO console socket to a runner baked into a new
+    `roomkit-sandbox` guest image (`smolbsd/`, built with `smolbsd/build.sh`),
+    instead of SSH on a forwarded port. That port came from
+    `hash(session_id) % 100`: two sessions could get the same one, and the
+    second one's commands then ran in the first one's VM; `delete_container`
+    killed whatever process held the port (`fuser -k`).
+  - VMs boot the shared image in snapshot mode. Sessions used to boot the same
+    image read-write (`-s`), so two of them could corrupt its filesystem.
+  - VMs run detached and are found again after a roomkit restart, from state
+    kept under `state_dir`. They used to be tracked in memory only.
+  - Each session gets a workspace disk mounted on `/workspace`, which outlives
+    its VM until `delete_container`.
+  - The environment given at creation reaches every command. Each variable
+    used to be exported in an SSH session of its own, and was lost.
+  - A timeout kills the command's process tree in the VM and returns 124; a VM
+    whose runner stops answering is stopped. The SSH client used to be left
+    running, and the command with it.
+  - Constructor: `service` defaults to `roomkit-sandbox`; new `image_tag`,
+    `network`, `workspace_gb`, `state_dir` and `boot_timeout`; `ssh_base_port`
+    and the unused `workdir` are gone. `exec_command`'s default `workdir` is
+    `/workspace`, as on the other backends.
+
 ## [0.4.0] — 2026-09-24
 
 ### Added
