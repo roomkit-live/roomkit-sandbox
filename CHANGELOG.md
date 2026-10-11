@@ -35,10 +35,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - A timeout kills the command's process tree in the VM and returns 124; a VM
     whose runner stops answering is stopped. The SSH client used to be left
     running, and the command with it.
-  - Constructor: `service` defaults to `roomkit-sandbox`; new `image_tag`,
-    `network`, `workspace_gb`, `state_dir` and `boot_timeout`; `ssh_base_port`
-    and the unused `workdir` are gone. `exec_command`'s default `workdir` is
-    `/workspace`, as on the other backends.
+  - Constructor: `service` defaults to `roomkit-sandbox` and `memory` to 512 MB
+    (was 256); new `image_tag`, `network`, `workspace_gb`, `state_dir` and
+    `boot_timeout`; `ssh_base_port` and the unused `workdir` are gone.
+    `exec_command`'s default `workdir` is `/workspace`, as on the other backends.
 
 ## [0.4.0] — 2026-09-24
 
