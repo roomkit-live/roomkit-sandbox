@@ -17,14 +17,31 @@ import json
 import os
 import re
 import shlex
+import shutil
 import signal
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Literal
 
 # Short enough that the socket path in the smolBSD directory stays under
 # the AF_UNIX limit: "sbx-" + slug (16) + "-" + digest (8).
 _SLUG_LEN = 16
 _NAME_RE = re.compile(rf"^sbx-[a-z0-9-]{{1,{_SLUG_LEN}}}-[0-9a-f]{{8}}$")
+
+# How a VM reaches the network: passt, QEMU user-mode NAT (startnb.sh's
+# default), or not at all.
+NetworkMode = Literal["passt", "user", "none"]
+
+# smolBSD guests give themselves the static address QEMU user-mode
+# networking expects (service/common/basicrc): passt is set up to match.
+# --no-map-gw keeps the gateway address from leading to the host's
+# loopback, which user-mode networking cannot; only DNS queries, to
+# 10.0.2.3, reach the host (its resolver).
+_PASST_NETWORK = (
+    "-device virtio-net-device,netdev=net0 "
+    "-netdev passt,id=net0,ipv6=off,address=10.0.2.15,netmask=255.255.255.0,"
+    "gateway=10.0.2.2,dns-forward=10.0.2.3,param=--no-map-gw"
+)
 
 
 def vm_name(session_id: str) -> str:
@@ -90,11 +107,10 @@ class VmSpec:
     service: str
     memory: int
     cpus: int
-    network: bool
     workspace_bytes: int
 
 
-def write_conf(paths: VmPaths, spec: VmSpec) -> None:
+def write_conf(paths: VmPaths, spec: VmSpec, network: NetworkMode) -> None:
     """Write the ``startnb.sh`` config file for this VM.
 
     ``uuid`` and ``max_ports=3`` (console + control port p1 + runner port
@@ -102,12 +118,15 @@ def write_conf(paths: VmPaths, spec: VmSpec) -> None:
     untouched, except for the workspace disk (``snapshot=off``), which
     keeps the Agent's files across VM restarts. (A 9p share would let
     the host read them, but NetBSD's 9p client fails ``getcwd()`` in any
-    subdirectory, which breaks git and most build tools.)
+    subdirectory, which breaks git and most build tools.) passt replaces
+    startnb.sh's own network (``nonet``) with one of ours.
     """
     extra = (
         f"-snapshot -drive if=none,file={paths.disk},format=raw,id=ws,snapshot=off "
         "-device virtio-blk-device,drive=ws"
     )
+    if network == "passt":
+        extra += " " + _PASST_NETWORK
     values = {
         "img": str(spec.image),
         "root": f"NAME={spec.service}root",
@@ -117,7 +136,7 @@ def write_conf(paths: VmPaths, spec: VmSpec) -> None:
         "max_ports": "3",
         "extra": extra,
     }
-    if not spec.network:
+    if network != "user":
         values["nonet"] = "yes"
     paths.conf.write_text("".join(f"{k}={shlex.quote(v)}\n" for k, v in values.items()))
 
@@ -156,6 +175,29 @@ def read_state(paths: VmPaths) -> VmState | None:
         )
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return None
+
+
+async def passt_supported(qemu: str) -> bool:
+    """Whether passt is installed and ``qemu`` can start it (QEMU 10.1+)."""
+    if shutil.which("passt") is None or shutil.which(qemu) is None:
+        return False
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            qemu,
+            "-netdev",
+            "help",
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+    except OSError:
+        return False
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), 10)
+    except TimeoutError:
+        proc.kill()
+        return False
+    return "passt" in out.decode(errors="replace").split()
 
 
 async def start(paths: VmPaths) -> None:

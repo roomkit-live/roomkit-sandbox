@@ -18,6 +18,9 @@ Requires:
 - smolBSD cloned, with the ``roomkit-sandbox`` image built into it
   (``smolbsd/build.sh /path/to/smolBSD``)
 - QEMU with KVM support, and ``socat``
+- passt, with QEMU 10.1 or later, for VMs with network access: without
+  it they get QEMU user-mode networking, which lets them reach services
+  listening on the host's loopback interface
 
 Usage::
 
@@ -51,11 +54,13 @@ from pathlib import Path
 from roomkit_sandbox._shared import ContainerInfo, ExecResult
 from roomkit_sandbox._smolbsd_runner import RunnerChannel
 from roomkit_sandbox._smolbsd_vm import (
+    NetworkMode,
     VmPaths,
     VmSpec,
     VmState,
     ensure_disk,
     is_vm_name,
+    passt_supported,
     read_state,
     running_pid,
     start,
@@ -69,12 +74,13 @@ logger = logging.getLogger("roomkit_sandbox.smolbsd")
 
 _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
-# smolBSD's name for the host architecture, as in its image file names
+# smolBSD's name for the host architecture (as in its image file names),
+# and QEMU's (as in the qemu-system-* binary startnb.sh runs)
 _ARCHES = {
-    "x86_64": "amd64",
-    "amd64": "amd64",
-    "aarch64": "evbarm-aarch64",
-    "arm64": "evbarm-aarch64",
+    "x86_64": ("amd64", "x86_64"),
+    "amd64": ("amd64", "x86_64"),
+    "aarch64": ("evbarm-aarch64", "aarch64"),
+    "arm64": ("evbarm-aarch64", "aarch64"),
 }
 
 # Paths end up in startnb.sh's eval'ed QEMU command line and in QEMU
@@ -136,7 +142,12 @@ class SmolBSDSandboxBackend:
             empty for an untagged image.
         memory: VM memory in MB.
         cpus: Number of CPU cores.
-        network: Give VMs outbound network access (QEMU user-mode NAT).
+        network: Give VMs outbound network access. Through passt when it
+            is installed and QEMU can start it (10.1 or later): the guest
+            reaches what the host reaches, except services listening on
+            the host's loopback interface. Otherwise through QEMU
+            user-mode networking, which exposes those too (a warning is
+            logged).
         workspace_gb: Size of each session's workspace disk, in GiB. The
             file is sparse: it takes the space actually written.
         state_dir: Where each VM's config, state, console log and
@@ -163,18 +174,21 @@ class SmolBSDSandboxBackend:
             raise ValueError(f"smolbsd_dir path too long for unix sockets: {self._smolbsd_dir}")
         root = Path(state_dir) if state_dir else _default_state_dir()
         self._state_dir = _safe_path(root.resolve(), "state_dir")
-        arch = _ARCHES.get(platform.machine().lower())
-        if arch is None:
+        arches = _ARCHES.get(platform.machine().lower())
+        if arches is None:
             raise ValueError(f"Unsupported host architecture for smolBSD: {platform.machine()}")
+        arch, qemu_machine = arches
         tag = f":{image_tag}" if image_tag else ""
         self._spec = VmSpec(
             image=self._smolbsd_dir / "images" / f"{service}-{arch}{tag}.img",
             service=service,
             memory=memory,
             cpus=cpus,
-            network=network,
             workspace_bytes=workspace_gb << 30,
         )
+        self._qemu = os.environ.get("QEMU") or f"qemu-system-{qemu_machine}"
+        self._network: NetworkMode | None = None if network else "none"
+        self._network_lock = asyncio.Lock()
         self._boot_timeout = boot_timeout
         self._extra_env = extra_env or {}
         self._channels: dict[str, RunnerChannel] = {}
@@ -187,6 +201,20 @@ class SmolBSDSandboxBackend:
         if name not in self._channels:
             self._channels[name] = RunnerChannel(str(self._paths(name).socket))
         return self._channels[name]
+
+    async def _network_mode(self) -> NetworkMode:
+        """How VMs reach the network, picked on first boot: passt when it can."""
+        async with self._network_lock:
+            if self._network is None:
+                self._network = "passt" if await passt_supported(self._qemu) else "user"
+                if self._network == "user":
+                    logger.warning(
+                        "passt is not available (it needs QEMU 10.1 or later): smolBSD VMs "
+                        "get QEMU user-mode networking, from which they can reach every "
+                        "service listening on the host's loopback interface. Install passt, "
+                        "or create the backend with network=False."
+                    )
+            return self._network
 
     async def _responds(self, name: str) -> bool:
         try:
@@ -224,7 +252,7 @@ class SmolBSDSandboxBackend:
         await stop(paths)  # clear what a dead VM of this session left behind
         paths.dir.mkdir(parents=True, exist_ok=True)
         ensure_disk(paths, self._spec.workspace_bytes)
-        write_conf(paths, self._spec)
+        write_conf(paths, self._spec, await self._network_mode())
         write_state(paths, VmState(session_id, labels, datetime.now(UTC).isoformat()))
         await start(paths)
         try:

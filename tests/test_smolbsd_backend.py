@@ -8,6 +8,7 @@ stop code paths run for real, only ``startnb.sh`` is swapped out.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import shutil
 import subprocess
@@ -18,7 +19,14 @@ from pathlib import Path
 import pytest
 
 from roomkit_sandbox import _smolbsd_vm, smolbsd_backend
-from roomkit_sandbox._smolbsd_vm import VmPaths, VmSpec, is_vm_name, vm_name, write_conf
+from roomkit_sandbox._smolbsd_vm import (
+    VmPaths,
+    VmSpec,
+    is_vm_name,
+    passt_supported,
+    vm_name,
+    write_conf,
+)
 from roomkit_sandbox.smolbsd_backend import SmolBSDSandboxBackend, _command_script
 
 FAKE_RUNNER = Path(__file__).with_name("fake_smolbsd_runner.py")
@@ -34,7 +42,18 @@ def test_vm_name_is_stable_unique_and_safe():
     assert not is_vm_name("sbx-a-0000000g")
 
 
-def test_conf_sources_to_the_expected_vm(tmp_path):
+def _sourced(conf: Path, *names: str) -> list[str]:
+    """The values ``conf`` gives these shell variables, as startnb.sh sources it."""
+    script = f'. "{conf}"; printf "%s|" ' + " ".join(f'"${name}"' for name in names)
+    out = subprocess.run(["sh", "-c", script], capture_output=True, text=True, check=True).stdout
+    return out.split("|")[: len(names)]
+
+
+@pytest.mark.parametrize(
+    ("network", "nonet", "netdev"),
+    [("none", "yes", None), ("user", "", None), ("passt", "yes", "-netdev passt,")],
+)
+def test_conf_sources_to_the_expected_vm(tmp_path, network, nonet, netdev):
     paths = VmPaths(name="sbx-s-12345678", state_dir=tmp_path / "state", smolbsd_dir=tmp_path)
     paths.dir.mkdir(parents=True)
     spec = VmSpec(
@@ -42,25 +61,44 @@ def test_conf_sources_to_the_expected_vm(tmp_path):
         service="roomkit-sandbox",
         memory=512,
         cpus=2,
-        network=False,
         workspace_bytes=1 << 30,
     )
-    write_conf(paths, spec)
-    script = f'. "{paths.conf}"; printf "%s|" "$img" "$root" "$mem" "$uuid" "$max_ports" "$nonet"'
-    out = subprocess.run(["sh", "-c", script], capture_output=True, text=True, check=True).stdout
-    assert out.split("|")[:6] == [
+    write_conf(paths, spec, network)
+    assert _sourced(paths.conf, "img", "root", "mem", "uuid", "max_ports", "nonet") == [
         str(spec.image),
         "NAME=roomkit-sandboxroot",
         "512",
         "sbx-s-12345678",
         "3",
-        "yes",
+        nonet,
     ]
-    extra = subprocess.run(
-        ["sh", "-c", f'. "{paths.conf}"; printf "%s" "$extra"'], capture_output=True, text=True
-    ).stdout
+    [extra] = _sourced(paths.conf, "extra")
     assert extra.startswith("-snapshot ")
     assert f"file={paths.disk},format=raw,id=ws,snapshot=off" in extra
+    if netdev is None:
+        assert "-netdev" not in extra
+    else:
+        # the guest's static address, and no way to the host's loopback
+        assert netdev in extra
+        assert "address=10.0.2.15," in extra
+        assert extra.endswith(",param=--no-map-gw")
+
+
+def _fake_bin(directory: Path, name: str, output: str = "") -> None:
+    path = directory / name
+    path.write_text(f"#!/bin/sh\nprintf '{output}'\n")
+    path.chmod(0o755)
+
+
+async def test_passt_needs_the_binary_and_a_qemu_that_starts_it(tmp_path, monkeypatch):
+    monkeypatch.setenv("PATH", str(tmp_path))
+    _fake_bin(tmp_path, "qemu-new", "Available netdev backend types:\\nsocket\\npasst\\nuser\\n")
+    _fake_bin(tmp_path, "qemu-old", "Available netdev backend types:\\nsocket\\nuser\\n")
+    assert not await passt_supported("qemu-new")  # passt not installed
+    _fake_bin(tmp_path, "passt")
+    assert await passt_supported("qemu-new")
+    assert not await passt_supported("qemu-old")
+    assert not await passt_supported("qemu-missing")
 
 
 def test_command_script_quotes_env_and_workdir():
@@ -68,6 +106,28 @@ def test_command_script_quotes_env_and_workdir():
     assert script == "export TOKEN='x'\"'\"'y'\ncd '/work dir' 2>/dev/null || true\necho 'a b'\n"
     with pytest.raises(ValueError, match="Invalid environment variable name"):
         _command_script(["true"], "", {"BAD-KEY": "1"})
+
+
+async def test_network_falls_back_to_user_mode_with_a_warning(short_dir, monkeypatch, caplog):
+    probes: list[str] = []
+
+    async def no_passt(qemu: str) -> bool:
+        probes.append(qemu)
+        return False
+
+    monkeypatch.setattr(smolbsd_backend, "passt_supported", no_passt)
+    monkeypatch.setenv("QEMU", "my-qemu")
+    backend = SmolBSDSandboxBackend(smolbsd_dir=str(short_dir))
+    with caplog.at_level(logging.WARNING, logger="roomkit_sandbox.smolbsd"):
+        modes = await asyncio.gather(backend._network_mode(), backend._network_mode())
+    assert modes == ["user", "user"]
+    assert probes == ["my-qemu"]  # the QEMU startnb.sh runs, probed once
+    [warning] = caplog.records
+    assert "loopback" in warning.getMessage()
+
+    offline = SmolBSDSandboxBackend(smolbsd_dir=str(short_dir), network=False)
+    assert await offline._network_mode() == "none"
+    assert probes == ["my-qemu"]
 
 
 def test_constructor_rejects_unsafe_paths(tmp_path):
@@ -109,7 +169,11 @@ def fake_qemu(monkeypatch):
         paths.pidfile.write_text(str(proc.pid))
         started.append(proc)
 
+    async def passt_supported(_qemu: str) -> bool:
+        return True
+
     monkeypatch.setattr(smolbsd_backend, "start", fake_start)
+    monkeypatch.setattr(smolbsd_backend, "passt_supported", passt_supported)
     yield started, flags
     for proc in started:
         proc.kill()

@@ -17,6 +17,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `hash(session_id) % 100`: two sessions could get the same one, and the
     second one's commands then ran in the first one's VM; `delete_container`
     killed whatever process held the port (`fuser -k`).
+  - With network access, VMs go through passt when it is installed (QEMU 10.1
+    or later): they reach the internet but not the services listening on the
+    host's loopback interface. Without passt they keep QEMU user-mode
+    networking, which exposes those through `10.0.2.2`, as the SSH backend
+    did, and the backend logs a warning.
   - VMs boot the shared image in snapshot mode. Sessions used to boot the same
     image read-write (`-s`), so two of them could corrupt its filesystem.
   - VMs run detached and are found again after a roomkit restart, from state

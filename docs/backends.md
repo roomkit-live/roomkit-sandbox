@@ -89,6 +89,7 @@ sandbox = ContainerSandboxExecutor(
 
 **Requirements:**
 - Linux with KVM (`/dev/kvm` readable and writable by the roomkit user), QEMU and `socat`
+- `passt`, with QEMU 10.1 or later, for VMs with network access (see Network below)
 - A smolBSD checkout ([github.com/NetBSDfr/smolBSD](https://github.com/NetBSDfr/smolBSD)),
   tested at `3c5fd41` (2026-10-07), at a path of 63 characters at most (unix socket limit)
 - The `roomkit-sandbox` guest image built into it (see setup below)
@@ -97,7 +98,7 @@ sandbox = ContainerSandboxExecutor(
 
 ```bash
 # 1. Install prerequisites
-sudo apt install curl git bmake qemu-system-x86_64 binutils libarchive-tools gdisk socat jq lsof
+sudo apt install curl git bmake qemu-system-x86_64 binutils libarchive-tools gdisk socat jq lsof passt
 
 # 2. Clone smolBSD and fetch its prebuilt builder image (no root needed)
 git clone https://github.com/NetBSDfr/smolBSD.git ~/smolBSD
@@ -119,12 +120,21 @@ smolbsd/build.sh ~/smolBSD NOSUDO=1
 - VMs run detached: they survive a roomkit restart and `find_container` picks
   them up again. Their state lives under `state_dir`
   (default `~/.local/state/roomkit-sandbox/smolbsd`).
-- Outbound network is on by default (QEMU user-mode NAT, nothing reachable from
-  outside); `network=False` turns it off.
 - The environment given at creation reaches every command; `execute(env=...)`
   adds values for one command.
 - Timeouts are enforced inside the VM: the command's process tree is killed and
   the exit code is 124. A VM whose runner stops answering is stopped.
+
+**Network:** on by default, `network=False` turns it off. Nothing outside the
+host can reach a VM.
+- With `passt` installed and QEMU 10.1 or later, the VM reaches what the host
+  reaches (the internet, the LAN, host services listening on its other
+  interfaces), like a Docker container, but not the services listening on the
+  host's loopback interface. DNS queries go to the host's resolver.
+- Without it, VMs get QEMU user-mode networking and the backend logs a warning:
+  the guest then reaches every service listening on the host's loopback
+  (`127.0.0.1`) through `10.0.2.2`, such as a local database, a dev server or a
+  model server. Install `passt`, or use `network=False` for code you do not trust.
 
 **Options:** `memory` (MB, 512), `cpus` (1), `network` (True), `workspace_gb` (8),
 `state_dir`, `boot_timeout` (30 s), `extra_env`, `service` and `image_tag` (the
@@ -133,7 +143,8 @@ image file, `images/<service>-<arch>:<tag>.img`).
 **Characteristics:**
 - True VM isolation (separate kernel, hypervisor escape required)
 - Native Unix commands (no RTK)
-- Ideal for untrusted code execution on a local machine
+- Ideal for untrusted code execution on a local machine, with `passt` or
+  `network=False`
 
 **Tests against real VMs:**
 

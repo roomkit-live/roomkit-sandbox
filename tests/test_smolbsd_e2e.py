@@ -9,6 +9,7 @@ can use KVM::
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import shutil
@@ -167,3 +168,33 @@ async def test_network_is_open_and_fast_from_first_command(backend):
     code, dns = r.output.split()
     assert (r.exit_code, code) == (0, "200")
     assert float(dns) < 2  # no DAD wait on the guest address
+
+
+async def test_guest_cannot_reach_host_loopback(backend):
+    if await backend._network_mode() != "passt":
+        pytest.skip("no passt: QEMU user-mode networking exposes the host's loopback")
+    connections: list[int] = []
+
+    async def on_connect(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        connections.append(1)
+        await reader.readuntil(b"\r\n\r\n")  # unread data would reset the connection
+        writer.write(b"HTTP/1.0 200 OK\r\n\r\nhost only\n")
+        await writer.drain()
+        writer.close()
+
+    server = await asyncio.start_server(on_connect, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    try:
+        # the gateway (slirp maps it to the host's loopback) and the DNS address
+        r = await _executor(backend).execute(
+            "bash",
+            {
+                "command": f"for a in 10.0.2.2 10.0.2.3; do "
+                f"curl -sS -m 3 http://$a:{port}/ && exit 0; done; exit 1"
+            },
+        )
+    finally:
+        server.close()
+        await server.wait_closed()
+    assert r.exit_code == 1, r.output
+    assert connections == []
