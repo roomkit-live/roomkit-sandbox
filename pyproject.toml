@@ -25,9 +25,6 @@ dependencies = [
     "roomkit>=0.7.0a9",
 ]
 
-[tool.uv.sources]
-roomkit = { path = "../roomkit", editable = true }
-
 [project.optional-dependencies]
 docker = ["docker>=7.0"]
 kubernetes = ["kubernetes>=31.0"]
