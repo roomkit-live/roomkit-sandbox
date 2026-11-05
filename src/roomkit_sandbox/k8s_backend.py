@@ -1,9 +1,8 @@
-"""Kubernetes backend for roomkit-sandbox.
+"""Kubernetes workspaces with one disposable pod per command.
 
-Creates lightweight pods with the sandbox image for command execution.
-Requires the ``kubernetes`` Python SDK::
-
-    pip install roomkit-sandbox[kubernetes]
+Files belong to a PVC. Processes belong to a pod with a kubelet deadline,
+including when the API dies. A fixed Job name admits one command per
+workspace across every API replica; an attachment nonce prevents name-reuse races.
 """
 
 from __future__ import annotations
@@ -13,80 +12,49 @@ import base64
 import logging
 import re
 import shlex
-import time
+import uuid
 from typing import Any
 
+from roomkit_sandbox import _k8s_objects as objects
+from roomkit_sandbox._k8s_jobs import CommandJobs
+from roomkit_sandbox._k8s_stream import MAX_TIMEOUT_SECONDS, new_api
 from roomkit_sandbox._shared import DEFAULT_IMAGE, ContainerInfo, ExecResult
 
 logger = logging.getLogger("roomkit_sandbox.k8s")
-
 _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _env_payload(env: dict[str, str]) -> str:
-    """``env`` as the one stdin line :func:`_wrap_command` reads: shell
-    ``export`` statements, base64-encoded so the line holds no newline."""
     lines = []
     for key, value in env.items():
-        if not _ENV_KEY_RE.match(key):
+        if not _ENV_KEY_RE.fullmatch(key):
             raise ValueError(f"Invalid environment variable name: {key!r}")
         lines.append(f"export {key}={shlex.quote(value)}")
-    return base64.b64encode("\n".join(lines).encode()).decode() + "\n"
-
-
-def _wrap_command(cmd: list[str], workdir: str, *, reads_env: bool) -> list[str]:
-    """The exec argv: ``cd`` into ``workdir``, first exporting the env line
-    read from stdin when ``reads_env``. The command itself is ``exec``-ed
-    with stdin from ``/dev/null`` so a reader of stdin sees EOF, as it does
-    when the exec has no stdin at all."""
-    if not workdir and not reads_env:
-        return cmd
-    parts = []
-    if reads_env:
-        parts.append(
-            'IFS= read -r __rks_env && eval "$(printf %s "$__rks_env" | base64 -d)"'
-            " && unset __rks_env"
-        )
-    if workdir:
-        parts.append(f"cd {shlex.quote(workdir)}")
-    if len(cmd) == 3 and cmd[0] == "sh" and cmd[1] == "-c":
-        run = f"exec sh -c {shlex.quote(cmd[2])}"
-    else:
-        run = f"exec {shlex.join(cmd)}"
-    if reads_env:
-        run += " </dev/null"
-    parts.append(run)
-    return ["sh", "-c", " && ".join(parts)]
-
-
-def _safe_pod_name(session_id: str) -> str:
-    """Convert a session ID to a valid K8s pod name."""
-    name = re.sub(r"[^a-z0-9-]", "-", session_id.lower())
-    return f"sandbox-{name}"[:63]
+    payload = base64.b64encode("\n".join(lines).encode()).decode() + "\n"
+    if len(payload) > 65536:
+        raise ValueError("Sandbox environment exceeds 64 KiB")
+    return payload
 
 
 def _k8s_label(key: str) -> str:
-    """Sanitize a label key to K8s-compatible format (alphanumeric, -, _, .)."""
-    label = re.sub(r"[^a-zA-Z0-9_./-]", "-", key)
-    label = label.strip("-_.")
-    return label[:63] or "label"
+    return re.sub(r"[^a-zA-Z0-9_./-]", "-", key).strip("-_.")[:63] or "label"
 
 
 def _k8s_label_value(value: str) -> str:
-    """Sanitize a label value to K8s-compatible format (alphanumeric, -, _, .)."""
-    sanitized = re.sub(r"[^a-zA-Z0-9_.-]", "-", value)
-    sanitized = sanitized.strip("-_.")
-    return sanitized[:63] or "value"
+    return re.sub(r"[^a-zA-Z0-9_.-]", "-", value).strip("-_.")[:63] or "value"
+
+
+def _labels(labels: dict[str, str] | None) -> dict[str, str]:
+    return {_k8s_label(k): _k8s_label_value(v) for k, v in (labels or {}).items()}
 
 
 class KubernetesSandboxBackend:
-    """Kubernetes backend for running sandbox pods.
+    """Persistent files, disposable processes; requires PVC and Secret RBAC.
 
-    Args:
-        image: Container image for sandbox pods.
-        namespace: Kubernetes namespace.
-        service_account: Service account for pods.
-        image_pull_secret: Optional image pull secret name.
+    ``runtime_class`` is mandatory when the deployment requires stronger kernel
+    isolation. A missing class fails at admission, never falls back to runc.
+    ``workspace_storage_class`` selects the existing storage provisioner; 4 GiB
+    is a storage request, whose enforcement depends on that provisioner.
     """
 
     def __init__(
@@ -96,73 +64,78 @@ class KubernetesSandboxBackend:
         service_account: str = "default",
         image_pull_secret: str = "",  # nosec B107
         extra_env: dict[str, str] | None = None,
+        runtime_class: str | None = None,
+        workspace_storage_class: str | None = None,
     ) -> None:
+        if runtime_class is not None and not runtime_class.strip():
+            raise ValueError("runtime_class must be a non-empty RuntimeClass name")
         self._image = image
         self._namespace = namespace
         self._service_account = service_account
         self._image_pull_secret = image_pull_secret
         self._extra_env = extra_env or {}
+        self._runtime_class = runtime_class
+        self._storage_class = workspace_storage_class
         self._core_api: Any = None
+        self._batch_api: Any = None
         self._stream: Any = None
-        self._session_pods: dict[str, str] = {}
+        self._exec_api_factory: Any = new_api
 
     def _init_client(self) -> None:
-        if self._core_api is not None:
-            return
+        if self._core_api is None:
+            from kubernetes import client, stream
+
+            self._core_api = new_api()
+            self._batch_api = client.BatchV1Api(self._core_api.api_client)
+            self._stream = stream
+
+    def _jobs(self) -> CommandJobs:
+        self._init_client()
+        return CommandJobs(
+            self._call, self._optional, self._namespace, self._stream, self._exec_api_factory
+        )
+
+    async def _call(self, method: str, *args: Any, **kwargs: Any) -> Any:
+        self._init_client()
+        return await asyncio.to_thread(
+            getattr(self._batch_api if "_job" in method else self._core_api, method),
+            *args,
+            namespace=self._namespace,
+            _request_timeout=(5, 10),
+            **kwargs,
+        )
+
+    async def _optional(self, method: str, name: str) -> Any:
+        from kubernetes.client.exceptions import ApiException
+
         try:
-            from kubernetes import client, config, stream
-        except ImportError as exc:
-            raise ImportError(
-                "kubernetes package required: pip install roomkit-sandbox[kubernetes]"
-            ) from exc
-        in_cluster = False
-        try:
-            config.load_incluster_config()
-            in_cluster = True
-        except config.ConfigException:
-            config.load_kube_config()
+            return await self._call(method, name)
+        except ApiException as exc:
+            if exc.status == 404:
+                return None
+            raise
 
-        if in_cluster:
-            # Two things to fix here:
-            #
-            # 1. Kubelet rotates the projected SA token (~1h via
-            #    BoundServiceAccountTokenVolume). The kubernetes client
-            #    reads the file once at load_incluster_config() and
-            #    caches it; every call past the TTL then 401s.
-            #
-            # 2. kubernetes-client v36 has an identifier mismatch:
-            #    load_incluster_config() writes the token to
-            #    api_key["authorization"] (legacy), but the generated
-            #    API methods authenticate via auth_settings=
-            #    ["BearerToken"] and look up api_key["BearerToken"].
-            #    Lookup misses → no Authorization header → 401, even
-            #    with a perfectly valid token. The fix is on
-            #    kubernetes-client master (writes BearerToken) but
-            #    is not in any released version as of v36.0.0.
-            #
-            # Solution: a per-call refresh hook that re-reads the
-            # token AND writes it under the BearerToken identifier
-            # the API methods expect. Drop this block once
-            # kubernetes-client ships the fix in a release.
-            def _refresh_sa_token(cfg):
-                try:
-                    with open("/var/run/secrets/kubernetes.io/serviceaccount/token") as f:
-                        token = f.read().strip()
-                    cfg.api_key["BearerToken"] = token
-                    cfg.api_key_prefix["BearerToken"] = "Bearer"
-                except FileNotFoundError:
-                    pass
+    @staticmethod
+    def _require_workspace(workspace: Any) -> None:
+        annotations = workspace.metadata.annotations or {}
+        if annotations.get(objects.FORMAT) != objects.FORMAT_VERSION:
+            raise RuntimeError("Unrecognized sandbox workspace; refusing to adopt it")
+        if workspace.metadata.deletion_timestamp:
+            raise RuntimeError("Sandbox workspace is being deleted")
 
-            default_cfg = client.Configuration.get_default_copy()
-            default_cfg.refresh_api_key_hook = _refresh_sa_token
-            # Seed once so the first call doesn't depend on the hook
-            # firing — some kubernetes-client paths only invoke the
-            # hook when api_key already has the identifier.
-            _refresh_sa_token(default_cfg)
-            client.Configuration.set_default(default_cfg)
+    async def _workspace(self, name: str) -> Any:
+        workspace = await self._optional("read_namespaced_persistent_volume_claim", name)
+        if workspace is None:
+            raise RuntimeError("Sandbox workspace no longer exists")
+        self._require_workspace(workspace)
+        return workspace
 
-        self._core_api = client.CoreV1Api()
-        self._stream = stream
+    async def _legacy_pods(self, session_id: str | None = None) -> list[Any]:
+        selector = "managed-by=roomkit-sandbox"
+        if session_id is not None:
+            selector += f",session={_k8s_label_value(session_id)}"
+        result = await self._call("list_namespaced_pod", label_selector=selector)
+        return [pod for pod in result.items if not pod.metadata.name.startswith("command-")]
 
     async def create_container(
         self,
@@ -170,106 +143,58 @@ class KubernetesSandboxBackend:
         labels: dict[str, str] | None = None,
         env: dict[str, str] | None = None,
     ) -> str:
-        """Create a sandbox pod and return its name."""
-        self._init_client()
+        """Create the persistent workspace; no untrusted process starts here."""
+        from kubernetes.client.exceptions import ApiException
 
-        from kubernetes.client import (
-            V1Container,
-            V1EnvVar,
-            V1LocalObjectReference,
-            V1ObjectMeta,
-            V1Pod,
-            V1PodSpec,
-            V1ResourceRequirements,
-            V1SecurityContext,
-        )
-
-        pod_name = _safe_pod_name(session_id)
-
-        # Build labels (sanitize values — K8s forbids colons etc.)
-        k8s_labels = {
-            "app": "roomkit-sandbox",
-            "session": _k8s_label_value(session_id),
-            "managed-by": "roomkit-sandbox",
-        }
-        for k, v in (labels or {}).items():
-            k8s_labels[_k8s_label(k)] = _k8s_label_value(v)
-
-        # Build env vars
-        merged_env = dict(self._extra_env)
-        if env:
-            merged_env.update(env)
-        env_vars = [V1EnvVar(name=k, value=v) for k, v in merged_env.items()]
-
-        pod = V1Pod(
-            metadata=V1ObjectMeta(name=pod_name, labels=k8s_labels),
-            spec=V1PodSpec(
-                restart_policy="Never",
-                service_account_name=self._service_account,
-                image_pull_secrets=(
-                    [V1LocalObjectReference(name=self._image_pull_secret)]
-                    if self._image_pull_secret
-                    else None
-                ),
-                containers=[
-                    V1Container(
-                        name="sandbox",
-                        image=self._image,
-                        command=["tail", "-f", "/dev/null"],
-                        working_dir="/workspace",
-                        env=env_vars,
-                        resources=V1ResourceRequirements(
-                            requests={"cpu": "0.5", "memory": "256Mi"},
-                            limits={"cpu": "1", "memory": "512Mi"},
-                        ),
-                        security_context=V1SecurityContext(run_as_user=1000),
-                    )
-                ],
-            ),
-        )
-
+        if await self._legacy_pods(session_id):
+            raise RuntimeError("Legacy sandbox found; migrate its workspace before replacing it")
+        merged_env = {**self._extra_env, **(env or {})}
+        _env_payload(merged_env)  # Validate before any resource is written.
+        body = objects.claim(session_id, _labels(labels), self._storage_class)
         try:
-            await asyncio.to_thread(
-                self._core_api.create_namespaced_pod,
-                self._namespace,
-                pod,
-            )
-        except Exception as e:
-            if "AlreadyExists" in str(e):
-                logger.warning("Pod %s already exists, reusing", pod_name)
-            else:
+            workspace = await self._call("create_namespaced_persistent_volume_claim", body=body)
+        except ApiException as exc:
+            if exc.status != 409:
                 raise
+            workspace = await self._workspace(objects.workspace_name(session_id))
+        self._require_workspace(workspace)
+        if workspace.metadata.annotations.get(objects.SESSION) != session_id:
+            raise RuntimeError("Sandbox workspace identity mismatch")
+        try:
+            await self._call(
+                "create_namespaced_secret", body=objects.environment(workspace, merged_env)
+            )
+        except ApiException as exc:
+            if exc.status != 409:
+                raise
+            secret = await self._call("read_namespaced_secret", workspace.metadata.name)
+            owners = secret.metadata.owner_references or []
+            if not any(owner.uid == workspace.metadata.uid for owner in owners):
+                raise RuntimeError("Sandbox environment belongs to another workspace") from exc
+        return workspace.metadata.name
 
-        await self._wait_for_pod_ready(pod_name)
-        self._session_pods[session_id] = pod_name
-        logger.info("Created sandbox pod %s (session=%s)", pod_name, session_id)
-        return pod_name
+    async def container_exists(self, container_id: str) -> bool:
+        workspace = await self._optional("read_namespaced_persistent_volume_claim", container_id)
+        if workspace is None:
+            return False
+        self._require_workspace(workspace)
+        environment = await self._optional("read_namespaced_secret", container_id)
+        if environment is None:
+            return False
+        if not any(
+            owner.uid == workspace.metadata.uid
+            for owner in environment.metadata.owner_references or []
+        ):
+            raise RuntimeError("Sandbox environment belongs to another workspace")
+        return True
 
-    async def _wait_for_pod_ready(self, pod_name: str, timeout: int = 60) -> None:
-        """Wait for pod to reach Running state."""
-        start = time.monotonic()
-
-        while True:
-            try:
-                pod = await asyncio.to_thread(
-                    self._core_api.read_namespaced_pod,
-                    pod_name,
-                    self._namespace,
-                )
-                if pod.status.phase == "Running":
-                    if pod.status.container_statuses:
-                        for cs in pod.status.container_statuses:
-                            if cs.name == "sandbox" and cs.ready:
-                                return
-                elif pod.status.phase in ("Failed", "Succeeded"):
-                    raise RuntimeError(f"Pod {pod_name} is in {pod.status.phase} state")
-            except Exception as e:
-                if "not found" not in str(e).lower():
-                    raise
-
-            if time.monotonic() - start > timeout:
-                raise TimeoutError(f"Pod {pod_name} not ready after {timeout}s")
-            await asyncio.sleep(1)
+    async def find_container(self, session_id: str) -> str | None:
+        name = objects.workspace_name(session_id)
+        if await self.container_exists(name):
+            return name
+        if await self._legacy_pods(session_id):
+            raise RuntimeError("Legacy sandbox found; migrate its workspace before replacing it")
+        return None
 
     async def exec_command(
         self,
@@ -279,132 +204,129 @@ class KubernetesSandboxBackend:
         env: dict[str, str] | None = None,
         timeout: int = 30,
     ) -> ExecResult:
-        """Execute a command in a sandbox pod.
-
-        ``env`` never appears in the exec request: the request only carries a
-        fixed wrapper, and the values are written to the exec's stdin as one
-        base64 line that the wrapper reads, exports, then runs the command with
-        stdin from ``/dev/null``. A value in the command would reach the API
-        server's request log and the wrapping shell's command line (``ps``).
-        """
-        self._init_client()
-
-        payload = _env_payload(env) if env else None
-        exec_cmd = _wrap_command(cmd, workdir, reads_env=payload is not None)
-
-        def _exec_blocking() -> ExecResult:
-            resp = self._stream.stream(
-                self._core_api.connect_get_namespaced_pod_exec,
-                container_id,
-                self._namespace,
-                command=exec_cmd,
-                container="sandbox",
-                stderr=True,
-                stdin=payload is not None,
-                stdout=True,
-                tty=False,
-                _preload_content=False,
+        """Run one command, then retire every process; retain the workspace."""
+        if (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, int)
+            or not 0 < timeout <= MAX_TIMEOUT_SECONDS
+        ):
+            raise ValueError(
+                f"Sandbox timeout must be an integer between 1 and {MAX_TIMEOUT_SECONDS}s"
             )
-            if payload is not None:
-                resp.write_stdin(payload)
-            stdout = ""
-            stderr = ""
-            while resp.is_open():
-                resp.update(timeout=1)
-                if resp.peek_stdout():
-                    stdout += resp.read_stdout()
-                if resp.peek_stderr():
-                    stderr += resp.read_stderr()
-            return ExecResult(
-                exit_code=resp.returncode or 0,
-                stdout=stdout,
-                stderr=stderr,
-            )
-
-        return await asyncio.wait_for(
-            asyncio.to_thread(_exec_blocking),
+        nonce = uuid.uuid4().hex
+        payload = nonce + "\n" + _env_payload(env or {})
+        workspace = await self._workspace(container_id)
+        body = objects.command_job(
+            workspace,
+            image=self._image,
+            service_account=self._service_account,
+            image_pull_secret=self._image_pull_secret,
+            runtime_class=self._runtime_class,
+            command=cmd,
+            workdir=workdir,
+            nonce=nonce,
             timeout=timeout,
         )
-
-    async def container_exists(self, container_id: str) -> bool:
-        """Check if a pod exists and is running."""
-        self._init_client()
-        try:
-            pod = await asyncio.to_thread(
-                self._core_api.read_namespaced_pod,
-                container_id,
-                self._namespace,
-            )
-            return pod.status.phase == "Running"
-        except Exception:
-            return False
-
-    async def find_container(self, session_id: str) -> str | None:
-        """Find a running pod by session ID label."""
-        # Check cache first
-        pod_name = self._session_pods.get(session_id)
-        if pod_name and await self.container_exists(pod_name):
-            return pod_name
-
-        self._init_client()
-        try:
-            safe_session = _k8s_label_value(session_id)
-            pods = await asyncio.to_thread(
-                self._core_api.list_namespaced_pod,
-                namespace=self._namespace,
-                label_selector=f"session={safe_session},managed-by=roomkit-sandbox",
-            )
-            for pod in pods.items:
-                if pod.status.phase == "Running":
-                    self._session_pods[session_id] = pod.metadata.name
-                    return pod.metadata.name
-        except Exception as e:
-            logger.error("Error finding pod by session %s: %s", session_id, e)
-        return None
-
-    async def list_containers(self, labels: dict[str, str] | None = None) -> list[ContainerInfo]:
-        """Every sandbox pod this backend manages, narrowed by ``labels``.
-
-        Keys and values go through the same sanitizer ``create_container``
-        applied, so a filter spelled like the labels handed in at creation
-        matches the pod. Every phase is reported: a ``Pending`` or ``Failed``
-        pod is still one to show and to delete.
-        """
-        self._init_client()
-        selectors = ["managed-by=roomkit-sandbox"]
-        selectors += [f"{_k8s_label(k)}={_k8s_label_value(v)}" for k, v in (labels or {}).items()]
-        pods = await asyncio.to_thread(
-            self._core_api.list_namespaced_pod,
-            namespace=self._namespace,
-            label_selector=",".join(selectors),
+        jobs = self._jobs()
+        job = await jobs.create(body)
+        logger.info(
+            "Sandbox command created workspace=%s job_uid=%s timeout_seconds=%s",
+            container_id,
+            job.metadata.uid,
+            timeout,
         )
-        infos: list[ContainerInfo] = []
-        for pod in pods.items:
-            meta = pod.metadata
-            pod_labels = dict(getattr(meta, "labels", None) or {})
-            created = getattr(meta, "creation_timestamp", None)
-            infos.append(
-                ContainerInfo(
-                    container_id=meta.name,
-                    session_id=pod_labels.get("session"),
-                    labels=pod_labels,
-                    status=str((pod.status.phase if pod.status else None) or "unknown").lower(),
-                    created_at=created.isoformat() if created is not None else None,
-                )
+        try:
+            pod = await jobs.ready(job)
+            # Teardown marks the PVC first. A creator racing it may have made
+            # a waiting pod, but must never release untrusted work into it.
+            current_workspace = await self._workspace(container_id)
+            if current_workspace.metadata.uid != workspace.metadata.uid:
+                raise RuntimeError("Sandbox workspace was replaced")
+            current_job = await self._call("read_namespaced_job", job.metadata.name)
+            if current_job.metadata.uid != job.metadata.uid:
+                raise RuntimeError("Sandbox command was replaced")
+            await jobs.shorten_deadline(current_job, "patch_namespaced_job", timeout)
+            await jobs.shorten_deadline(pod, "patch_namespaced_pod", timeout)
+            result = await jobs.attach(pod, payload, timeout)
+            result.exit_code = await jobs.exit_code(pod)
+            return result
+        finally:
+            # A failed delete is an error, never a claimed successful stop. The
+            # kubelet deadline remains effective if this process/API is gone.
+            await asyncio.shield(jobs.remove(job))
+            logger.info(
+                "Sandbox command retired workspace=%s job_uid=%s", container_id, job.metadata.uid
             )
-        return infos
 
     async def delete_container(self, container_id: str) -> None:
-        """Delete a sandbox pod."""
-        self._init_client()
-        try:
-            await asyncio.to_thread(
-                self._core_api.delete_namespaced_pod,
-                container_id,
-                self._namespace,
+        """Explicit teardown deletes files too, unlike command completion."""
+        jobs = self._jobs()
+        workspace = await self._optional("read_namespaced_persistent_volume_claim", container_id)
+        if workspace is None:
+            # Legacy pods remain visible for explicit administrative teardown.
+            legacy = await self._optional("read_namespaced_pod", container_id)
+            if legacy and (legacy.metadata.labels or {}).get("managed-by") == objects.OWNER:
+                await jobs.remove_pod(legacy)
+            return
+        self._require_workspace(workspace)
+        await self._call(
+            "delete_namespaced_persistent_volume_claim",
+            container_id,
+            body={"preconditions": {"uid": workspace.metadata.uid}},
+        )
+        job = await self._optional("read_namespaced_job", objects.command_name(container_id))
+        if job is not None and any(
+            owner.uid == workspace.metadata.uid for owner in job.metadata.owner_references or []
+        ):
+            await jobs.remove(job)
+        # GC may have removed the Job first, leaving its running pod behind.
+        # The immutable PVC UID survives on every pod, independently of names
+        # and owners that GC can already have collected.
+        pods = await self._call(
+            "list_namespaced_pod",
+            label_selector=(f"{objects.WORKSPACE_UID}={workspace.metadata.uid}"),
+        )
+        for pod in pods.items:
+            await jobs.remove_pod(pod)
+        # The immutable creation environment has the PVC as its owner: GC
+        # removes it with the workspace, never after an individual command.
+
+    async def list_containers(self, labels: dict[str, str] | None = None) -> list[ContainerInfo]:
+        selector = ",".join(
+            f"{k}={v}" for k, v in {**_labels(labels), "managed-by": objects.OWNER}.items()
+        )
+        claims = await self._call(
+            "list_namespaced_persistent_volume_claim", label_selector=selector
+        )
+        pods = await self._call("list_namespaced_pod", label_selector=selector)
+        active = {
+            (pod.metadata.labels or {}).get("batch.kubernetes.io/job-name"): pod
+            for pod in pods.items
+        }
+        infos = []
+        for claim in claims.items:
+            meta = claim.metadata
+            pod = active.get(objects.command_name(meta.name))
+            status = str(pod.status.phase).lower() if pod else "ready"
+            infos.append(
+                ContainerInfo(
+                    meta.name,
+                    (meta.annotations or {}).get(objects.SESSION),
+                    meta.labels or {},
+                    status,
+                    meta.creation_timestamp.isoformat() if meta.creation_timestamp else None,
+                )
             )
-            # Clean up cache
-            self._session_pods = {k: v for k, v in self._session_pods.items() if v != container_id}
-            logger.info("Deleted sandbox pod %s", container_id)
-        except Exception:
-            logger.warning("Failed to delete pod %s", container_id, exc_info=True)
+        for pod in pods.items:
+            if not pod.metadata.name.startswith("command-"):
+                meta = pod.metadata
+                infos.append(
+                    ContainerInfo(
+                        meta.name,
+                        (meta.labels or {}).get("session"),
+                        meta.labels or {},
+                        "legacy",
+                        meta.creation_timestamp.isoformat() if meta.creation_timestamp else None,
+                    )
+                )
+        return infos
