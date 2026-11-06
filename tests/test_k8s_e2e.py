@@ -11,6 +11,7 @@ import asyncio
 import os
 import sys
 import uuid
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -102,10 +103,11 @@ async def test_timeout_and_output_limit_retire_pods(workspace):
     assert result.exit_code == 0 and result.stdout == "ready"
 
 
-async def wait_for_orphan_gc(batch, name, *, timeout=155):
+async def wait_for_orphan_gc(batch, name, *, timeout=180):
     from kubernetes.client.exceptions import ApiException
 
     saw_deadline = False
+    retained_until = None
     async with asyncio.timeout(timeout):
         while True:
             try:
@@ -115,11 +117,22 @@ async def wait_for_orphan_gc(batch, name, *, timeout=155):
             except ApiException as exc:
                 if exc.status == 404:
                     assert saw_deadline
+                    assert retained_until is not None
+                    assert datetime.now(UTC) >= retained_until
                     return
                 raise
+            assert job.spec.ttl_seconds_after_finished == objects.RESULT_RETENTION_SECONDS == 120
             saw_deadline |= any(
                 condition.reason == "DeadlineExceeded" for condition in job.status.conditions or []
             )
+            for condition in job.status.conditions or []:
+                if condition.type == "Failed" and condition.status == "True":
+                    retained_until = condition.last_transition_time + timedelta(
+                        seconds=job.spec.ttl_seconds_after_finished
+                    )
+            if job.metadata.deletion_timestamp is not None:
+                assert retained_until is not None
+                assert job.metadata.deletion_timestamp >= retained_until
             await asyncio.sleep(0.5)
 
 
@@ -147,7 +160,7 @@ if __import__('sys').argv[2] == 'pending':
     objects.command_job = unscheduled_job
 asyncio.run(configured_backend().exec_command(
     __import__('sys').argv[1], ['sh', '-ec',
-    'printf started; sleep 15; touch /workspace/escaped'], timeout=3))
+    'echo started; sleep 25; touch /workspace/escaped'], timeout=10))
 """
     child = await asyncio.create_subprocess_exec(
         sys.executable,
@@ -186,7 +199,7 @@ asyncio.run(configured_backend().exec_command(
                             container="sandbox",
                             _request_timeout=(3, 3),
                         )
-                        if log == "started":
+                        if log.strip() == "started":
                             started_at = asyncio.get_running_loop().time()
                             break
                 except Exception:
@@ -194,12 +207,20 @@ asyncio.run(configured_backend().exec_command(
                         _, error = await child.communicate()
                         pytest.fail(error.decode())
                 await asyncio.sleep(0.1)
+        # A short command timeout can enter the SDK's own finally/delete path
+        # before this observer sees its log. That is not controller-loss GC.
+        assert child.returncode is None
+        job = await asyncio.to_thread(
+            batch.read_namespaced_job, job_name, NAMESPACE, _request_timeout=(3, 3)
+        )
+        assert job.metadata.deletion_timestamp is None
+        assert not any(c.type == "Failed" for c in job.status.conditions or [])
         child.kill()
         await child.wait()
         await wait_for_orphan_gc(batch, job_name)
-        # The killed command would write after 15 s. Check beyond that instant,
+        # The killed command would write after 25 s. Check beyond that instant,
         # not merely when the status first says DeadlineExceeded.
-        await asyncio.sleep(max(0, 16 - (asyncio.get_running_loop().time() - started_at)))
+        await asyncio.sleep(max(0, 26 - (asyncio.get_running_loop().time() - started_at)))
         result = await backend.exec_command(name, ["sh", "-ec", "test ! -e /workspace/escaped"])
         assert result.exit_code == 0
     finally:
